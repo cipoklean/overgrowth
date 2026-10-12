@@ -82,7 +82,7 @@
       winds.push({
         y0: y, y1: y + h,
         dir: rnd() < 0.5 ? -1 : 1,
-        str: 38 + rnd() * 18 + band * 10,   // sideways push in units/s at full gust
+        str: 75 + rnd() * 25 + band * 12,   // sideways push in units/s at full gust
         period: 3.2 + rnd() * 1.8,
         phase: rnd() * 10,
       });
@@ -94,7 +94,7 @@
   function gustOf(w) {
     // 0..1: calm most of the cycle, a strong swell in the middle
     const c = 0.5 - 0.5 * Math.cos(((clock + w.phase) / w.period) * Math.PI * 2);
-    return 0.25 + 0.75 * c * c;
+    return 0.3 + 0.7 * c;
   }
   function windAt(y) {
     for (const w of winds) if (y >= w.y0 && y <= w.y1) return w;
