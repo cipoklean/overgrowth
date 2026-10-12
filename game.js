@@ -22,6 +22,9 @@
   const CANOPY_STEP = 1200;       // height of each canopy line
   const STORAGE_KEY = 'overgrowth.tree.v1';
   const WIND_START = 650;         // first wind band height
+  const BEETLE_FROM_RUN = 3;      // beetles show up once there's wood worth eating
+  const BEETLE_SPEED = 4;         // branch points per second
+  const BEETLE_SAP = 15;          // sap for squashing one
 
   // ---------- canvas ----------
   const canvas = document.getElementById('game');
@@ -205,6 +208,43 @@
   let tip, angle, angVel, sap, branch, grafted, endReason, endTimer, runHeight;
   let cam = 0, shake = 0, hitstop = 0, flash = 0;
   const particles = [];
+  let beetles = [];        // { wi, i, dir, start, wig }
+
+  // a wood point is gone if a beetle chewed it, this run or an earlier one
+  function isGone(w, wi, i) {
+    if (w.gone) for (const g of w.gone) if (i >= g[0] && i <= g[1]) return true;
+    for (const b of beetles) {
+      if (b.wi !== wi) continue;
+      const lo = Math.min(b.start, b.i), hi = Math.max(b.start, b.i);
+      if (i >= lo && i <= hi) return true;
+    }
+    return false;
+  }
+
+  function spawnBeetles() {
+    beetles = [];
+    if (runCount < BEETLE_FROM_RUN) return;
+    const want = Math.min(4, 1 + Math.floor((runCount - BEETLE_FROM_RUN) / 4));
+    const pool = [];
+    wood.forEach((w, wi) => { if (!w.cracked && w.age >= 1 && w.pts.length > 40) pool.push(wi); });
+    for (let k = 0; k < want && pool.length; k++) {
+      const wi = pool.splice((Math.random() * pool.length) | 0, 1)[0];
+      const n = wood[wi].pts.length;
+      // start somewhere above the shared trunk
+      let i = 20 + ((Math.random() * (n - 30)) | 0);
+      let tries = 0;
+      while (isGone(wood[wi], wi, i) && tries++ < 10) i = 20 + ((Math.random() * (n - 30)) | 0);
+      if (isGone(wood[wi], wi, i)) continue;
+      beetles.push({ wi, i, start: i, dir: Math.random() < 0.5 ? -1 : 1, wig: Math.random() * 6 });
+    }
+  }
+
+  function bankChew(b) {
+    const w = wood[b.wi];
+    if (!w) return;
+    const lo = Math.round(Math.min(b.start, b.i)), hi = Math.round(Math.max(b.start, b.i));
+    if (hi - lo >= 1) (w.gone = w.gone || []).push([lo, hi]);
+  }
 
   function resetRun() {
     tip = { x: ROOT_X, y: 0 };
@@ -218,11 +258,14 @@
 
   function startGrowing() {
     state = 'growing';
+    spawnBeetles();
     audio.blip(330, 0.12, 'triangle', 0.12, 120);
   }
 
   function endRun(reason) {
     state = 'ended';
+    for (const b of beetles) bankChew(b);
+    beetles = [];
     endReason = reason;
     endTimer = 0.6;
     if (branch.length > 3) {
@@ -292,12 +335,43 @@
           if (w.cracked || grafted.has(wi)) continue;
           const pts = w.pts;
           for (let i = 10; i < pts.length; i += 1) {
+            if (isGone(w, wi, i)) continue;
             const dx = pts[i][0] - tip.x, dy = pts[i][1] - tip.y;
             if (dx * dx + dy * dy < GRAFT_RADIUS * GRAFT_RADIUS) {
               graft(wi, w);
               break;
             }
           }
+        }
+      }
+
+      // beetles chew along their branch; touch one to squash it
+      for (let bi = beetles.length - 1; bi >= 0; bi--) {
+        const b = beetles[bi];
+        const w = wood[b.wi];
+        const n = w.pts.length;
+        b.wig += dt * 14;
+        let ni = b.i + b.dir * BEETLE_SPEED * dt;
+        if (ni < 12 || ni > n - 2) {
+          // hit an end: bank what was chewed and turn around from here
+          bankChew(b);
+          b.dir *= -1;
+          ni = Math.max(12, Math.min(n - 2, ni));
+          b.start = ni;
+        } else if (w.gone && w.gone.some(g => ni >= g[0] && ni <= g[1] && !(b.i >= g[0] && b.i <= g[1]))) {
+          bankChew(b); b.dir *= -1; ni = b.i; b.start = ni;
+        }
+        b.i = ni;
+        const p = w.pts[Math.round(b.i)];
+        if (Math.random() < dt * 6) particles.push({ x: p[0], y: p[1], vx: (Math.random() - 0.5) * 30, vy: 10, life: 0.4, max: 0.4, c: '#c9a26b', r: 1.2 });
+        if (Math.hypot(p[0] - tip.x, p[1] - tip.y) < 12) {
+          bankChew(b);
+          beetles.splice(bi, 1);
+          sap = Math.min(SAP_MAX, sap + BEETLE_SAP);
+          burst(p[0], p[1], 14, ['#2a2f1c', '#4b6b2a', '#d9e86a'], 110);
+          audio.blip(260, 0.08, 'square', 0.1, 400);
+          setTimeout(() => audio.blip(520, 0.1, 'triangle', 0.08, 300), 70);
+          shake = Math.max(shake, 3);
         }
       }
 
@@ -381,7 +455,7 @@
     return `rgb(${r},${g},${b})`;
   }
 
-  function drawBranch(pts, color, baseWidth, dashed) {
+  function drawBranch(pts, color, baseWidth, dashed, gone) {
     if (pts.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineCap = 'round';
@@ -389,6 +463,7 @@
     if (dashed) ctx.setLineDash([6 * scale, 5 * scale]);
     const n = pts.length;
     for (let i = 1; i < n; i++) {
+      if (gone && (gone(i) || gone(i - 1))) continue;
       const k = 1 - i / (n + 20);
       ctx.lineWidth = Math.max(1.5, baseWidth * k) * scale;
       ctx.beginPath();
@@ -514,7 +589,7 @@
     const order = wood.map((w, i) => i).sort((a, b) => wood[b].age - wood[a].age);
     for (const i of order) {
       const w = wood[i];
-      drawBranch(w.pts, woodColor(w), 11, w.cracked);
+      drawBranch(w.pts, woodColor(w), 11, w.cracked, (k) => isGone(w, i, k));
       drawLeaves(w);
       if (!w.cracked && w.age >= BRITTLE_AGE) {
         // hairline cracks mark brittle wood
@@ -525,6 +600,33 @@
           ctx.beginPath(); ctx.moveTo(sx(p[0] - 3), sy(p[1] + 3)); ctx.lineTo(sx(p[0] + 3), sy(p[1] - 3)); ctx.stroke();
         }
       }
+    }
+
+    // beetles
+    for (const b of beetles) {
+      const w = wood[b.wi];
+      const p = w.pts[Math.round(b.i)];
+      const q = w.pts[Math.max(0, Math.min(w.pts.length - 1, Math.round(b.i) + b.dir * 2))];
+      const x = sx(p[0]), y = sy(p[1]);
+      if (y < -20 || y > H + 20) continue;
+      const a = Math.atan2(sy(q[1]) - y, sx(q[0]) - x);
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(a);
+      ctx.strokeStyle = '#1b1d12'; ctx.lineWidth = 1.2 * scale;
+      for (let l = -1; l <= 1; l++) {
+        const sw = Math.sin(b.wig + l * 2) * 2 * scale;
+        ctx.beginPath();
+        ctx.moveTo(l * 3 * scale, 0); ctx.lineTo(l * 3 * scale + sw, -6 * scale);
+        ctx.moveTo(l * 3 * scale, 0); ctx.lineTo(l * 3 * scale - sw, 6 * scale);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#2f3a1a';
+      ctx.beginPath(); ctx.ellipse(0, 0, 6.5 * scale, 4.2 * scale, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#1b1d12';
+      ctx.beginPath(); ctx.arc(6 * scale, 0, 2.6 * scale, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(220,240,140,0.6)';
+      ctx.beginPath(); ctx.ellipse(-1 * scale, -1.5 * scale, 2.5 * scale, 1 * scale, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
     }
 
     // the living branch
@@ -576,7 +678,9 @@
       banner(runCount === 0 ? 'Overgrowth' : 'Grow again',
         runCount === 0
           ? 'Hold to bend right · let go to bend left\nTouch old wood to graft and refill sap'
-          : 'Your last branch is wood now. Graft onto it to climb higher.',
+          : runCount === BEETLE_FROM_RUN
+            ? 'Beetles are eating your wood. Touch one to squash it.'
+            : 'Your last branch is wood now. Graft onto it to climb higher.',
         'Tap or press Space to grow');
     } else if (state === 'ended') {
       const why = endReason === 'thorn' ? 'Thorns got you.' : endReason === 'wall' ? 'You grew out of the light.' : 'Out of sap.';
