@@ -97,8 +97,10 @@
   // ---------- dewdrops: small sap pickups scattered up the tree ----------
   const DEW_SAP = 25, DEW_RADIUS = 14;
   const dews = [];
-  (function buildDew() {
-    const rnd = mulberry32(42016);
+  // reshuffled at the start of every run
+  function buildDew() {
+    dews.length = 0;
+    const rnd = mulberry32((Math.random() * 1e9) | 0);
     let y = 260;
     while (y < CANOPY_STEP * 4) {
       let x = 50 + rnd() * (WORLD_W - 100);
@@ -110,7 +112,8 @@
       dews.push({ x, y, bob: rnd() * 6 });
       y += 150 + rnd() * 90;
     }
-  })();
+  }
+  buildDew();
   let dewTaken = new Set();
 
   // ---------- frost patches (seeded, above the first canopy) ----------
@@ -290,6 +293,7 @@
   function resetRun() {
     frosted = false;
     dewTaken = new Set();
+    buildDew();
     tip = { x: ROOT_X, y: 0 };
     angle = 0; angVel = 0; sap = SAP_MAX;
     branch = [[tip.x, tip.y]];
