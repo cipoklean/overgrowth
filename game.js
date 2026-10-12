@@ -85,8 +85,8 @@
       winds.push({
         y0: y, y1: y + h,
         dir: rnd() < 0.5 ? -1 : 1,
-        str: 45 + rnd() * 15 + band * 8,    // sideways drift in units/s at full gust
-        torque: 3.6 + band * 0.3,           // how hard it bends the branch at full gust   // sideways push in units/s at full gust
+        str: 30 + rnd() * 12 + band * 6,    // sideways drift in units/s at full gust
+        torque: Math.min(2.3, 1.5 + band * 0.25), // bend at full gust; always below TURN_RATE so you can fight it
         period: 3.2 + rnd() * 1.8,
         phase: rnd() * 10,
       });
@@ -354,7 +354,7 @@
     let windHere = 0;
     if (state === 'growing') {
       // steering: smooth angular velocity toward the target bend
-      // wind bends the branch too: at full gust it beats your steering
+      // wind bends the branch too: strong, but steering can always win slowly
       const wzBend = windAt(tip.y);
       const windBend = wzBend ? wzBend.dir * wzBend.torque * gustOf(wzBend) : 0;
       const target = (holding ? TURN_RATE : -TURN_RATE) + windBend;
