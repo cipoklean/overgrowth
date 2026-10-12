@@ -10,7 +10,7 @@
   const WORLD_W = 600;            // world width in units
   const ROOT_X = WORLD_W / 2;
   const GROW_SPEED = 95;          // units per second
-  const TURN_RATE = 1.9;          // rad/s at full bend
+  const TURN_RATE = 2.8;          // rad/s at full bend
   const MAX_LEAN = 1.2;           // rad from vertical
   const SAP_MAX = 100;
   const SAP_DRAIN = 14;           // per second
@@ -205,7 +205,7 @@
     if (state === 'growing') {
       // steering: smooth angular velocity toward the target bend
       const target = holding ? TURN_RATE : -TURN_RATE;
-      angVel += (target - angVel) * Math.min(1, dt * 6);
+      angVel += (target - angVel) * Math.min(1, dt * 10);
       angle = Math.max(-MAX_LEAN, Math.min(MAX_LEAN, angle + angVel * dt));
 
       tip.x += Math.sin(angle) * GROW_SPEED * dt;
