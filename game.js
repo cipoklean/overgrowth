@@ -13,7 +13,7 @@
   const TURN_RATE = 2.8;          // rad/s at full bend
   const MAX_LEAN = 1.2;           // rad from vertical
   const SAP_MAX = 100;
-  const SAP_DRAIN = 14;           // per second
+  const SAP_DRAIN = 12;           // per second
   const GRAFT_SAP = 60;
   const GRAFT_RADIUS = 11;
   const GRAFT_MIN_HEIGHT = 120;   // no grafting on the shared trunk near the root
@@ -93,6 +93,25 @@
       y += h + 320 + rnd() * 260 - band * 30;
     }
   })();
+
+  // ---------- dewdrops: small sap pickups scattered up the tree ----------
+  const DEW_SAP = 25, DEW_RADIUS = 14;
+  const dews = [];
+  (function buildDew() {
+    const rnd = mulberry32(42016);
+    let y = 260;
+    while (y < CANOPY_STEP * 4) {
+      let x = 50 + rnd() * (WORLD_W - 100);
+      for (let tries = 0; tries < 8; tries++) {
+        const hit = thorns.some(t => Math.hypot(t.x - x, t.y - y) < t.r + 25);
+        if (!hit) break;
+        x = 50 + rnd() * (WORLD_W - 100);
+      }
+      dews.push({ x, y, bob: rnd() * 6 });
+      y += 150 + rnd() * 90;
+    }
+  })();
+  let dewTaken = new Set();
 
   // ---------- frost patches (seeded, above the first canopy) ----------
   // Inside frost you grow slower and burn sap faster.
@@ -270,6 +289,7 @@
 
   function resetRun() {
     frosted = false;
+    dewTaken = new Set();
     tip = { x: ROOT_X, y: 0 };
     angle = 0; angVel = 0; sap = SAP_MAX;
     branch = [[tip.x, tip.y]];
@@ -403,6 +423,18 @@
           audio.blip(260, 0.08, 'square', 0.1, 400);
           setTimeout(() => audio.blip(520, 0.1, 'triangle', 0.08, 300), 70);
           shake = Math.max(shake, 3);
+        }
+      }
+
+      // dewdrops
+      for (let di = 0; di < dews.length; di++) {
+        const d = dews[di];
+        if (dewTaken.has(di) || Math.abs(d.y - tip.y) > DEW_RADIUS) continue;
+        if (Math.hypot(d.x - tip.x, d.y - tip.y) < DEW_RADIUS) {
+          dewTaken.add(di);
+          sap = Math.min(SAP_MAX, sap + DEW_SAP);
+          burst(d.x, d.y, 10, ['#cfeeff', '#8fd0f5', '#ffffff'], 80);
+          audio.blip(880, 0.1, 'sine', 0.08, 300);
         }
       }
 
@@ -644,6 +676,20 @@
     }
 
     for (const f of frosts) drawFrost(f);
+    for (let di = 0; di < dews.length; di++) {
+      if (dewTaken.has(di)) continue;
+      const d = dews[di];
+      const x = sx(d.x), y = sy(d.y + Math.sin(clock * 2.5 + d.bob) * 3), r = 6 * scale;
+      if (y < -20 || y > H + 20) continue;
+      ctx.fillStyle = 'rgba(140,205,245,0.9)';
+      ctx.beginPath();
+      ctx.moveTo(x, y - r * 1.8);
+      ctx.quadraticCurveTo(x + r * 1.1, y - r * 0.2, x, y + r);
+      ctx.quadraticCurveTo(x - r * 1.1, y - r * 0.2, x, y - r * 1.8);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.28, 0, Math.PI * 2); ctx.fill();
+    }
     for (const t of thorns) drawThorn(t);
 
     // old wood, oldest first so fresh wood sits on top
@@ -738,7 +784,7 @@
     if (state === 'ready') {
       banner(runCount === 0 ? 'Overgrowth' : 'Grow again',
         runCount === 0
-          ? 'Hold to bend right · let go to bend left\nTouch old wood to graft and refill sap'
+          ? 'Hold to bend right · let go to bend left\nGraft onto old wood or grab dewdrops for sap'
           : runCount === BEETLE_FROM_RUN
             ? 'Beetles are eating your wood. Touch one to squash it.'
             : 'Your last branch is wood now. Graft onto it to climb higher.',
