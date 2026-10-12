@@ -358,7 +358,8 @@
       const wzBend = windAt(tip.y);
       const windBend = wzBend ? wzBend.dir * wzBend.torque * gustOf(wzBend) : 0;
       const target = (holding ? TURN_RATE : -TURN_RATE) + windBend;
-      angVel += (target - angVel) * Math.min(1, dt * 10);
+      // frost is icy: steering responds sluggishly, so you skid along your current curve
+      angVel += (target - angVel) * Math.min(1, dt * (frosted ? 1.6 : 10));
       angle = Math.max(-MAX_LEAN, Math.min(MAX_LEAN, angle + angVel * dt));
 
       const nowFrost = inFrost(tip.x, tip.y);
