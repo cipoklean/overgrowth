@@ -94,6 +94,28 @@
     }
   })();
 
+  // ---------- frost patches (seeded, above the first canopy) ----------
+  // Inside frost you grow slower and burn sap faster.
+  const FROST_SLOW = 0.55, FROST_DRAIN = 2.6;
+  const frosts = [];
+  (function buildFrost() {
+    const rnd = mulberry32(161026);
+    let y = CANOPY_STEP + 200;
+    while (y < CANOPY_STEP * 4) {
+      const band = Math.floor(y / CANOPY_STEP);
+      frosts.push({ x: 60 + rnd() * (WORLD_W - 120), y, r: 55 + rnd() * 35 + band * 8, seed: (rnd() * 1e9) | 0 });
+      y += 260 + rnd() * 240 - band * 25;
+    }
+  })();
+  function inFrost(x, y) {
+    for (const f of frosts) {
+      if (Math.abs(f.y - y) > f.r) continue;
+      if (Math.hypot(f.x - x, f.y - y) < f.r) return true;
+    }
+    return false;
+  }
+  let frosted = false;
+
   let clock = 0;
   function gustOf(w) {
     // 0..1: calm most of the cycle, a strong swell in the middle
@@ -247,6 +269,7 @@
   }
 
   function resetRun() {
+    frosted = false;
     tip = { x: ROOT_X, y: 0 };
     angle = 0; angVel = 0; sap = SAP_MAX;
     branch = [[tip.x, tip.y]];
@@ -314,8 +337,15 @@
       angVel += (target - angVel) * Math.min(1, dt * 10);
       angle = Math.max(-MAX_LEAN, Math.min(MAX_LEAN, angle + angVel * dt));
 
-      tip.x += Math.sin(angle) * GROW_SPEED * dt;
-      tip.y += Math.cos(angle) * GROW_SPEED * dt;
+      const nowFrost = inFrost(tip.x, tip.y);
+      if (nowFrost && !frosted) {
+        audio.blip(1400, 0.12, 'sine', 0.06, 400);
+        setTimeout(() => audio.blip(1900, 0.1, 'sine', 0.04, 300), 60);
+      }
+      frosted = nowFrost;
+      const spd = GROW_SPEED * (frosted ? FROST_SLOW : 1);
+      tip.x += Math.sin(angle) * spd * dt;
+      tip.y += Math.cos(angle) * spd * dt;
       const wz = windAt(tip.y);
       if (wz) {
         const gst = gustOf(wz);
@@ -323,7 +353,8 @@
         windHere = gst;
       }
       runHeight = Math.max(runHeight, tip.y);
-      sap -= SAP_DRAIN * dt;
+      sap -= SAP_DRAIN * (frosted ? FROST_DRAIN : 1) * dt;
+      if (frosted && Math.random() < dt * 20) particles.push({ x: tip.x + (Math.random() - 0.5) * 14, y: tip.y + (Math.random() - 0.5) * 14, vx: (Math.random() - 0.5) * 15, vy: 30, life: 0.6, max: 0.6, c: '#e8f6ff', r: 1.6 });
 
       const last = branch[branch.length - 1];
       if (Math.hypot(tip.x - last[0], tip.y - last[1]) >= NODE_STEP) branch.push([tip.x, tip.y]);
@@ -497,6 +528,35 @@
     }
   }
 
+  function drawFrost(f) {
+    const x = sx(f.x), y = sy(f.y), r = f.r * scale;
+    if (y < -r * 1.5 || y > H + r * 1.5) return;
+    const g = ctx.createRadialGradient(x, y, r * 0.2, x, y, r);
+    g.addColorStop(0, 'rgba(225,245,255,0.55)');
+    g.addColorStop(0.75, 'rgba(190,225,250,0.35)');
+    g.addColorStop(1, 'rgba(190,225,250,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    // little snowflake crystals that twinkle
+    const rnd = mulberry32(f.seed);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 9; i++) {
+      const a = rnd() * Math.PI * 2, d = rnd() * r * 0.8, s = (2.5 + rnd() * 3) * scale;
+      const tw = 0.5 + 0.5 * Math.sin(clock * 3 + i * 1.7);
+      ctx.globalAlpha = 0.3 + tw * 0.7;
+      const cx = x + Math.cos(a) * d, cy = y + Math.sin(a) * d;
+      for (let k = 0; k < 3; k++) {
+        const b = k * Math.PI / 3;
+        ctx.beginPath();
+        ctx.moveTo(cx - Math.cos(b) * s, cy - Math.sin(b) * s);
+        ctx.lineTo(cx + Math.cos(b) * s, cy + Math.sin(b) * s);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
   function drawThorn(t) {
     const x = sx(t.x), y = sy(t.y), r = t.r * scale;
     if (y < -r * 2 || y > H + r * 2) return;
@@ -583,6 +643,7 @@
       ctx.fillRect(0, gy - 4 * scale, W, 6 * scale);
     }
 
+    for (const f of frosts) drawFrost(f);
     for (const t of thorns) drawThorn(t);
 
     // old wood, oldest first so fresh wood sits on top
@@ -667,7 +728,7 @@
     const bw = Math.min(220, W - pad * 2 - 60), bx = W - bw - pad, by = 16;
     ctx.fillStyle = 'rgba(0,0,0,0.2)';
     ctx.fillRect(bx, by, bw, 12);
-    ctx.fillStyle = sap < 25 ? '#e0a03a' : '#7cc94a';
+    ctx.fillStyle = state === 'growing' && frosted ? '#9fd6f5' : sap < 25 ? '#e0a03a' : '#7cc94a';
     ctx.fillRect(bx, by, bw * (sap / SAP_MAX), 12);
     ctx.fillStyle = 'rgba(20,30,20,0.8)';
     ctx.textAlign = 'right';
