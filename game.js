@@ -21,6 +21,7 @@
   const NODE_STEP = 6;            // units between stored branch points
   const CANOPY_STEP = 1200;       // height of each canopy line
   const STORAGE_KEY = 'overgrowth.tree.v1';
+  const WIND_START = 650;         // first wind band height
 
   // ---------- canvas ----------
   const canvas = document.getElementById('game');
@@ -67,6 +68,39 @@
       y += 150 + rnd() * 110 - band * 12;
     }
   })();
+
+  // ---------- wind bands (also seeded) ----------
+  // Each band blows one way. Gusts swell and fade on a loop; leaves streaming
+  // across the band show how hard it's blowing right now.
+  const winds = [];
+  (function buildWind() {
+    const rnd = mulberry32(777016);
+    let y = WIND_START;
+    while (y < CANOPY_STEP * 4) {
+      const band = Math.floor(y / CANOPY_STEP);
+      const h = 140 + rnd() * 120;
+      winds.push({
+        y0: y, y1: y + h,
+        dir: rnd() < 0.5 ? -1 : 1,
+        str: 38 + rnd() * 18 + band * 10,   // sideways push in units/s at full gust
+        period: 3.2 + rnd() * 1.8,
+        phase: rnd() * 10,
+      });
+      y += h + 320 + rnd() * 260 - band * 30;
+    }
+  })();
+
+  let clock = 0;
+  function gustOf(w) {
+    // 0..1: calm most of the cycle, a strong swell in the middle
+    const c = 0.5 - 0.5 * Math.cos(((clock + w.phase) / w.period) * Math.PI * 2);
+    return 0.25 + 0.75 * c * c;
+  }
+  function windAt(y) {
+    for (const w of winds) if (y >= w.y0 && y <= w.y1) return w;
+    return null;
+  }
+  const windLeaves = [];
 
   // ---------- persistent tree ----------
   let wood = [];   // { pts: [[x,y],...], age, cracked, seed }
@@ -124,13 +158,30 @@
 
   // ---------- audio (tiny synth, no assets) ----------
   const audio = (() => {
-    let ac = null;
+    let ac = null, windGain = null;
+    function makeWind() {
+      const len = ac.sampleRate * 2;
+      const buf = ac.createBuffer(1, len, ac.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      const src = ac.createBufferSource();
+      src.buffer = buf; src.loop = true;
+      const f = ac.createBiquadFilter();
+      f.type = 'bandpass'; f.frequency.value = 500; f.Q.value = 0.7;
+      windGain = ac.createGain(); windGain.gain.value = 0;
+      src.connect(f); f.connect(windGain); windGain.connect(ac.destination);
+      src.start();
+    }
     return {
       unlock() {
         if (!ac) {
-          try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ac = null; }
+          try { ac = new (window.AudioContext || window.webkitAudioContext)(); makeWind(); } catch (e) { ac = null; }
         }
         if (ac && ac.state === 'suspended') ac.resume();
+      },
+      wind(level) {
+        if (!windGain) return;
+        windGain.gain.setTargetAtTime(level * 0.09, ac.currentTime, 0.15);
       },
       blip(freq, dur, type = 'sine', vol = 0.15, slide = 0) {
         if (!ac) return;
@@ -151,7 +202,7 @@
   // ---------- run state ----------
   let state = 'ready';     // ready | growing | ended
   let tip, angle, angVel, sap, branch, grafted, endReason, endTimer, runHeight;
-  let cam = 0, shake = 0;
+  let cam = 0, shake = 0, hitstop = 0, flash = 0;
   const particles = [];
 
   function resetRun() {
@@ -182,9 +233,14 @@
     bestHeight = Math.max(bestHeight, runHeight);
     save();
     if (reason === 'thorn') {
-      shake = 10;
-      burst(tip.x, tip.y, 22, ['#c98a4b', '#7a5230', '#e8c08a'], 180);
-      audio.blip(140, 0.25, 'sawtooth', 0.14, -80);
+      shake = 18;
+      hitstop = 0.09;
+      flash = 1;
+      burst(tip.x, tip.y, 34, ['#c98a4b', '#7a5230', '#e8c08a', '#7d3b6b'], 220);
+      audio.blip(140, 0.3, 'sawtooth', 0.16, -90);
+      audio.blip(70, 0.35, 'square', 0.1, -30);
+      setTimeout(() => audio.blip(900, 0.08, 'square', 0.05, -500), 30);
+      try { if (navigator.vibrate) navigator.vibrate([40, 30, 60]); } catch (e) { /* no haptics */ }
     } else {
       burst(tip.x, tip.y, 12, ['#9bd46a', '#6aa84f'], 60);
       audio.blip(220, 0.4, 'sine', 0.1, -120);
@@ -202,6 +258,9 @@
 
   // ---------- update ----------
   function update(dt) {
+    if (hitstop > 0) { hitstop -= dt; dt *= 0.08; }
+    clock += dt;
+    let windHere = 0;
     if (state === 'growing') {
       // steering: smooth angular velocity toward the target bend
       const target = holding ? TURN_RATE : -TURN_RATE;
@@ -210,6 +269,12 @@
 
       tip.x += Math.sin(angle) * GROW_SPEED * dt;
       tip.y += Math.cos(angle) * GROW_SPEED * dt;
+      const wz = windAt(tip.y);
+      if (wz) {
+        const gst = gustOf(wz);
+        tip.x += wz.dir * wz.str * gst * dt;
+        windHere = gst;
+      }
       runHeight = Math.max(runHeight, tip.y);
       sap -= SAP_DRAIN * dt;
 
@@ -262,6 +327,30 @@
       p.vx *= 0.98;
     }
     shake = Math.max(0, shake - dt * 30);
+    flash = Math.max(0, flash - dt * 4);
+    audio.wind(windHere);
+
+    // ambient leaves streaming through visible wind bands
+    const viewTop = cam + viewH + 40, viewBot = cam - 40;
+    for (const w of winds) {
+      if (w.y1 < viewBot || w.y0 > viewTop) continue;
+      const gst = gustOf(w);
+      if (Math.random() < dt * (3 + gst * 22)) {
+        windLeaves.push({
+          x: w.dir > 0 ? -10 : WORLD_W + 10,
+          y: w.y0 + Math.random() * (w.y1 - w.y0),
+          w, wob: Math.random() * 6, rot: Math.random() * 6,
+        });
+      }
+    }
+    for (let i = windLeaves.length - 1; i >= 0; i--) {
+      const L = windLeaves[i];
+      const gst = gustOf(L.w);
+      L.x += L.w.dir * (40 + gst * 260) * dt;
+      L.wob += dt * 5;
+      L.rot += dt * (2 + gst * 6) * L.w.dir;
+      if (L.x < -20 || L.x > WORLD_W + 20 || windLeaves.length > 220) windLeaves.splice(i, 1);
+    }
   }
 
   function graft(wi, w) {
@@ -377,6 +466,35 @@
       ctx.fillText(`Canopy ${i}`, sx(8), y - 6);
     }
 
+    // wind bands: faint tint plus chevrons that brighten with the gust
+    for (const w of winds) {
+      const top = sy(w.y1), bot = sy(w.y0);
+      if (bot < -10 || top > H + 10) continue;
+      const gst = gustOf(w);
+      ctx.fillStyle = `rgba(220,240,255,${0.08 + gst * 0.14})`;
+      ctx.fillRect(sx(0), top, WORLD_W * scale, bot - top);
+      ctx.strokeStyle = `rgba(255,255,255,${0.25 + gst * 0.55})`;
+      ctx.lineWidth = 2;
+      const mid = (top + bot) / 2, cs = 7 * scale;
+      const drift = ((clock * (30 + gst * 120)) % 60) * w.dir;
+      for (let k = -1; k < 11; k++) {
+        const cx = sx(k * 60 + drift);
+        if (cx < sx(0) - 10 || cx > sx(WORLD_W) + 10) continue;
+        ctx.beginPath();
+        ctx.moveTo(cx - cs * w.dir, mid - cs);
+        ctx.lineTo(cx, mid);
+        ctx.lineTo(cx - cs * w.dir, mid + cs);
+        ctx.stroke();
+      }
+    }
+    for (const L of windLeaves) {
+      const y = L.y + Math.sin(L.wob) * 6;
+      ctx.fillStyle = 'rgba(120,175,70,0.85)';
+      ctx.beginPath();
+      ctx.ellipse(sx(L.x), sy(y), 4.5 * scale, 2.2 * scale, L.rot, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // ground
     const gy = sy(0);
     if (gy < H + 10) {
@@ -422,6 +540,10 @@
     }
     ctx.globalAlpha = 1;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (flash > 0) {
+      ctx.fillStyle = `rgba(150,30,60,${flash * 0.28})`;
+      ctx.fillRect(0, 0, W, H);
+    }
 
     drawHud();
   }
