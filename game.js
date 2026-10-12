@@ -676,20 +676,6 @@
     }
 
     for (const f of frosts) drawFrost(f);
-    for (let di = 0; di < dews.length; di++) {
-      if (dewTaken.has(di)) continue;
-      const d = dews[di];
-      const x = sx(d.x), y = sy(d.y + Math.sin(clock * 2.5 + d.bob) * 3), r = 6 * scale;
-      if (y < -20 || y > H + 20) continue;
-      ctx.fillStyle = 'rgba(140,205,245,0.9)';
-      ctx.beginPath();
-      ctx.moveTo(x, y - r * 1.8);
-      ctx.quadraticCurveTo(x + r * 1.1, y - r * 0.2, x, y + r);
-      ctx.quadraticCurveTo(x - r * 1.1, y - r * 0.2, x, y - r * 1.8);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.28, 0, Math.PI * 2); ctx.fill();
-    }
     for (const t of thorns) drawThorn(t);
 
     // old wood, oldest first so fresh wood sits on top
@@ -734,6 +720,24 @@
       ctx.fillStyle = 'rgba(220,240,140,0.6)';
       ctx.beginPath(); ctx.ellipse(-1 * scale, -1.5 * scale, 2.5 * scale, 1 * scale, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+    }
+
+    // dewdrops sit on top of the wood so the tree never hides them
+    for (let di = 0; di < dews.length; di++) {
+      if (dewTaken.has(di)) continue;
+      const d = dews[di];
+      const x = sx(d.x), y = sy(d.y + Math.sin(clock * 2.5 + d.bob) * 3), r = 6 * scale;
+      if (y < -20 || y > H + 20) continue;
+      ctx.fillStyle = 'rgba(200,235,255,0.35)';
+      ctx.beginPath(); ctx.arc(x, y - r * 0.3, r * 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(140,205,245,0.95)';
+      ctx.beginPath();
+      ctx.moveTo(x, y - r * 1.8);
+      ctx.quadraticCurveTo(x + r * 1.1, y - r * 0.2, x, y + r);
+      ctx.quadraticCurveTo(x - r * 1.1, y - r * 0.2, x, y - r * 1.8);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.28, 0, Math.PI * 2); ctx.fill();
     }
 
     // the living branch
