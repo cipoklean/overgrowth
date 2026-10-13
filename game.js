@@ -25,6 +25,8 @@
   const BEETLE_FROM_RUN = 3;      // beetles show up once there's wood worth eating
   const BEETLE_SPEED = 4;         // branch points per second
   const BEETLE_SAP = 15;          // sap for squashing one
+  const CANOPY_SAP = 30;          // sap bonus for crossing a canopy line
+  const SUN_CANOPY = 4;           // reaching this canopy line wins
 
   // ---------- canvas ----------
   const canvas = document.getElementById('game');
@@ -154,6 +156,8 @@
   let wood = [];   // { pts: [[x,y],...], age, cracked, seed }
   let bestHeight = 0;
   let runCount = 0;
+  let sunRun = 0;      // the run that first reached the sun (0 = not yet)
+  let seen = {};       // first-time hints already shown
 
   function load() {
     try {
@@ -163,11 +167,13 @@
       wood = d.wood || [];
       bestHeight = d.bestHeight || 0;
       runCount = d.runCount || 0;
+      sunRun = d.sunRun || 0;
+      seen = d.seen || {};
     } catch (e) { /* fresh tree */ }
   }
   function save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ wood, bestHeight, runCount }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ wood, bestHeight, runCount, sunRun, seen }));
     } catch (e) { /* storage full or blocked; tree lives for this session */ }
   }
   load();
@@ -201,7 +207,7 @@
   });
 
   function clearTree() {
-    wood = []; bestHeight = 0; runCount = 0; save(); resetRun();
+    wood = []; bestHeight = 0; runCount = 0; sunRun = 0; save(); resetRun();
   }
 
   // ---------- audio (tiny synth, no assets) ----------
@@ -250,7 +256,15 @@
   // ---------- run state ----------
   let state = 'ready';     // ready | growing | ended
   let tip, angle, angVel, sap, branch, grafted, endReason, endTimer, runHeight;
-  let cam = 0, shake = 0, hitstop = 0, flash = 0;
+  let cam = 0, shake = 0, hitstop = 0, flash = 0, glow = 0;
+  let canopyHit = 0;       // highest canopy line crossed this run
+  let toast = null;        // { title, body, t } short message over the play area
+  function showToast(title, body, t = 2.6) { toast = { title, body, t, max: t }; }
+  function hintOnce(key, title, body) {
+    if (seen[key]) return;
+    seen[key] = 1; save();
+    showToast(title, body, 3.2);
+  }
   const particles = [];
   let beetles = [];        // { wi, i, dir, start, wig }
 
@@ -298,7 +312,7 @@
     angle = 0; angVel = 0; sap = SAP_MAX;
     branch = [[tip.x, tip.y]];
     grafted = new Set();
-    endReason = ''; endTimer = 0; runHeight = 0;
+    endReason = ''; endTimer = 0; runHeight = 0; canopyHit = 0; toast = null;
     state = 'ready';
   }
   resetRun();
@@ -320,10 +334,18 @@
       wood.push({ pts: branch.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]), age: 0, cracked: false, seed: (Math.random() * 1e9) | 0 });
     }
     runCount += 1;
+    if (reason === 'sun' && !sunRun) sunRun = runCount;
     const newBest = runHeight > bestHeight;
     bestHeight = Math.max(bestHeight, runHeight);
     save();
-    if (reason === 'thorn') {
+    if (reason === 'sun') {
+      glow = 1.6;
+      shake = 8;
+      burst(tip.x, tip.y, 60, ['#fff3a8', '#ffd25a', '#ffffff', '#b9f28a'], 260);
+      [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => audio.blip(f, 0.25, 'triangle', 0.1, 0), i * 120));
+      try { if (navigator.vibrate) navigator.vibrate([30, 40, 30, 40, 80]); } catch (e) { /* no haptics */ }
+      endTimer = 1.4;
+    } else if (reason === 'thorn') {
       shake = 18;
       hitstop = 0.09;
       flash = 1;
@@ -364,6 +386,7 @@
 
       const nowFrost = inFrost(tip.x, tip.y);
       if (nowFrost && !frosted) {
+        hintOnce('frost', 'Frost', 'Slow, slippery, and it drinks sap. Get out fast.');
         audio.blip(1400, 0.12, 'sine', 0.06, 400);
         setTimeout(() => audio.blip(1900, 0.1, 'sine', 0.04, 300), 60);
       }
@@ -376,6 +399,7 @@
         const gst = gustOf(wz);
         tip.x += wz.dir * wz.str * gst * dt;
         windHere = gst;
+        hintOnce('wind', 'Wind!', 'It pushes and bends you. Hold or let go against it.');
       }
       runHeight = Math.max(runHeight, tip.y);
       sap -= SAP_DRAIN * (frosted ? FROST_DRAIN : 1) * dt;
@@ -440,11 +464,28 @@
           sap = Math.min(SAP_MAX, sap + DEW_SAP);
           burst(d.x, d.y, 10, ['#cfeeff', '#8fd0f5', '#ffffff'], 80);
           audio.blip(880, 0.1, 'sine', 0.08, 300);
+          hintOnce('dew', 'Dewdrop +25 sap', 'They move every run. Grab them on the way up.');
+        }
+      }
+
+      // canopy lines: a bonus and a moment; the last one is the sun
+      const reached = Math.floor(tip.y / CANOPY_STEP);
+      if (reached > canopyHit && reached >= 1) {
+        canopyHit = reached;
+        if (canopyHit >= SUN_CANOPY) { endRun('sun'); }
+        else {
+          sap = Math.min(SAP_MAX, sap + CANOPY_SAP);
+          glow = 1;
+          shake = Math.max(shake, 5);
+          burst(tip.x, tip.y, 26, ['#d9f59a', '#9bd46a', '#fff6c2'], 160);
+          [523, 659, 784].forEach((f, i) => setTimeout(() => audio.blip(f, 0.16, 'triangle', 0.09, 0), i * 90));
+          showToast(`Canopy ${canopyHit}!`, `+${CANOPY_SAP} sap · ${SUN_CANOPY - canopyHit} more to the sun`);
         }
       }
 
       // collisions
-      if (tip.x < 6 || tip.x > WORLD_W - 6) endRun('wall');
+      if (state !== 'growing') { /* reached the sun this frame */ }
+      else if (tip.x < 6 || tip.x > WORLD_W - 6) endRun('wall');
       else {
         for (const t of thorns) {
           if (Math.abs(t.y - tip.y) > 60) continue;
@@ -474,6 +515,8 @@
     }
     shake = Math.max(0, shake - dt * 30);
     flash = Math.max(0, flash - dt * 4);
+    glow = Math.max(0, glow - dt * 1.5);
+    if (toast && (toast.t -= dt) <= 0) toast = null;
     audio.wind(windHere);
 
     // ambient leaves streaming through visible wind bands
@@ -628,6 +671,21 @@
     ctx.fillRect(0, 0, offX, H);
     ctx.fillRect(offX + WORLD_W * scale, 0, W - offX - WORLD_W * scale, H);
 
+    // the sun waits just above the last canopy line
+    {
+      const x = sx(WORLD_W / 2), y = sy(CANOPY_STEP * SUN_CANOPY + 260), r = 90 * scale;
+      if (y > -r * 3 && y < H + r * 3) {
+        const sg = ctx.createRadialGradient(x, y, r * 0.2, x, y, r * 3);
+        sg.addColorStop(0, 'rgba(255,246,190,0.95)');
+        sg.addColorStop(0.35, 'rgba(255,220,120,0.45)');
+        sg.addColorStop(1, 'rgba(255,220,120,0)');
+        ctx.fillStyle = sg;
+        ctx.beginPath(); ctx.arc(x, y, r * 3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff3b0';
+        ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
     // canopy lines
     ctx.font = `${Math.max(11, 13 * scale)}px system-ui, sans-serif`;
     for (let i = 1; i <= 4; i++) {
@@ -639,7 +697,7 @@
       ctx.beginPath(); ctx.moveTo(sx(0), y); ctx.lineTo(sx(WORLD_W), y); ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(30,70,30,0.85)';
-      ctx.fillText(`Canopy ${i}`, sx(8), y - 6);
+      ctx.fillText(i === SUN_CANOPY ? 'Sunlight' : `Canopy ${i}`, sx(8), y - 6);
     }
 
     // wind bands: faint tint plus chevrons that brighten with the gust
@@ -762,6 +820,10 @@
     }
     ctx.globalAlpha = 1;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (glow > 0) {
+      ctx.fillStyle = `rgba(255,244,190,${Math.min(1, glow) * 0.35})`;
+      ctx.fillRect(0, 0, W, H);
+    }
     if (flash > 0) {
       ctx.fillStyle = `rgba(150,30,60,${flash * 0.28})`;
       ctx.fillRect(0, 0, W, H);
@@ -790,6 +852,21 @@
     ctx.fillText('sap', bx - 6, by + 11);
     ctx.textAlign = 'center';
 
+    if (toast && state === 'growing') {
+      const a = Math.min(1, toast.t / 0.4, (toast.max - toast.t) / 0.2 + 0.2);
+      ctx.globalAlpha = a;
+      const tw = Math.min(W - 40, 360), ty = H * 0.17;
+      ctx.fillStyle = 'rgba(255,252,240,0.85)';
+      roundRect((W - tw) / 2, ty - 24, tw, 54, 12);
+      ctx.fill();
+      ctx.fillStyle = '#2e3b22';
+      ctx.font = '700 17px system-ui, sans-serif';
+      ctx.fillText(toast.title, W / 2, ty - 2);
+      ctx.font = '13px system-ui, sans-serif';
+      ctx.fillText(toast.body, W / 2, ty + 18, tw - 20);
+      ctx.globalAlpha = 1;
+    }
+
     if (state === 'ready') {
       banner(runCount === 0 ? 'Overgrowth' : 'Grow again',
         runCount === 0
@@ -798,6 +875,13 @@
             ? 'Beetles are eating your wood. Touch one to squash it.'
             : 'Your last branch is wood now. Graft onto it to climb higher.',
         'Tap or press Space to grow');
+    } else if (state === 'ended' && endReason === 'sun') {
+      const first = sunRun === runCount;
+      banner('You reached the sun!',
+        first
+          ? `It took ${runCount} run${runCount === 1 ? '' : 's'} and ${wood.length} branches of wood.\nTap "New tree" to try it in fewer.`
+          : `Your tree reached the sun again (first on run ${sunRun}).\nTap "New tree" to beat it in fewer runs.`,
+        endTimer <= 0 ? 'Tap to keep growing' : '');
     } else if (state === 'ended') {
       const why = endReason === 'thorn' ? 'Thorns got you.' : endReason === 'wall' ? 'You grew out of the light.' : 'Out of sap.';
       banner(why, `This branch reached ${Math.floor(runHeight)}. It stays as wood for your next run.`, endTimer <= 0 ? 'Tap to grow again' : '');
