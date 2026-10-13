@@ -27,8 +27,6 @@
   const BEETLE_SAP = 15;          // sap for squashing one
   const CANOPY_SAP = 30;          // sap bonus for crossing a canopy line
   const SUN_CANOPY = 4;           // reaching this canopy line wins
-  // test mode: add ?infsap to the URL for a sap bar that never empties
-  const INF_SAP = typeof location !== 'undefined' && /[?&]infsap\b/.test(location.search);
 
   // ---------- canvas ----------
   const canvas = document.getElementById('game');
@@ -268,6 +266,8 @@
     showToast(title, body, 3.2);
   }
   const particles = [];
+  const popups = [];       // floating "+25 sap" text in the world
+  function popup(x, y, text, c) { popups.push({ x, y, text, c, life: 1.1, max: 1.1 }); }
   let beetles = [];        // { wi, i, dir, start, wig }
 
   // a wood point is gone if a beetle chewed it, this run or an earlier one
@@ -314,6 +314,7 @@
     angle = 0; angVel = 0; sap = SAP_MAX;
     branch = [[tip.x, tip.y]];
     grafted = new Set();
+    popups.length = 0;
     endReason = ''; endTimer = 0; runHeight = 0; canopyHit = 0; toast = null;
     state = 'ready';
   }
@@ -405,7 +406,6 @@
       }
       runHeight = Math.max(runHeight, tip.y);
       sap -= SAP_DRAIN * (frosted ? FROST_DRAIN : 1) * dt;
-      if (INF_SAP) sap = SAP_MAX;
       if (frosted && Math.random() < dt * 20) particles.push({ x: tip.x + (Math.random() - 0.5) * 14, y: tip.y + (Math.random() - 0.5) * 14, vx: (Math.random() - 0.5) * 15, vy: 30, life: 0.6, max: 0.6, c: '#e8f6ff', r: 1.6 });
 
       const last = branch[branch.length - 1];
@@ -451,6 +451,7 @@
           bankChew(b);
           beetles.splice(bi, 1);
           sap = Math.min(SAP_MAX, sap + BEETLE_SAP);
+          popup(p[0], p[1], `+${BEETLE_SAP} sap`, '#6b5a12');
           burst(p[0], p[1], 14, ['#2a2f1c', '#4b6b2a', '#d9e86a'], 110);
           audio.blip(260, 0.08, 'square', 0.1, 400);
           setTimeout(() => audio.blip(520, 0.1, 'triangle', 0.08, 300), 70);
@@ -465,6 +466,7 @@
         if (Math.hypot(d.x - tip.x, d.y - tip.y) < DEW_RADIUS) {
           dewTaken.add(di);
           sap = Math.min(SAP_MAX, sap + DEW_SAP);
+          popup(d.x, d.y, `+${DEW_SAP} sap`, '#2f86c4');
           burst(d.x, d.y, 10, ['#cfeeff', '#8fd0f5', '#ffffff'], 80);
           audio.blip(880, 0.1, 'sine', 0.08, 300);
           hintOnce('dew', 'Dewdrop +25 sap', 'They move every run. Grab them on the way up.');
@@ -478,6 +480,7 @@
         if (canopyHit >= SUN_CANOPY) { endRun('sun'); }
         else {
           sap = Math.min(SAP_MAX, sap + CANOPY_SAP);
+          popup(tip.x, tip.y, `+${CANOPY_SAP} sap`, '#3f8a1f');
           glow = 1;
           shake = Math.max(shake, 5);
           burst(tip.x, tip.y, 26, ['#d9f59a', '#9bd46a', '#fff6c2'], 160);
@@ -516,6 +519,11 @@
       p.x += p.vx * dt; p.y += p.vy * dt; p.vy -= 120 * dt;
       p.vx *= 0.98;
     }
+    for (let i = popups.length - 1; i >= 0; i--) {
+      const q = popups[i];
+      q.life -= dt; q.y += 40 * dt;
+      if (q.life <= 0) popups.splice(i, 1);
+    }
     shake = Math.max(0, shake - dt * 30);
     flash = Math.max(0, flash - dt * 4);
     glow = Math.max(0, glow - dt * 1.5);
@@ -548,6 +556,7 @@
   function graft(wi, w) {
     grafted.add(wi);
     sap = Math.min(SAP_MAX, sap + GRAFT_SAP);
+    popup(tip.x, tip.y, `+${GRAFT_SAP} sap`, '#3f8a1f');
     burst(tip.x, tip.y, 16, ['#b9f28a', '#e9ffb0', '#6fcf5a'], 120);
     audio.blip(520, 0.15, 'triangle', 0.12, 260);
     if (w.age >= BRITTLE_AGE) {
@@ -821,6 +830,17 @@
       ctx.fillStyle = p.c;
       ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), p.r * scale, 0, Math.PI * 2); ctx.fill();
     }
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${Math.max(13, 16 * scale)}px system-ui, sans-serif`;
+    for (const q of popups) {
+      ctx.globalAlpha = Math.min(1, q.life / 0.4);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,252,240,0.9)';
+      ctx.strokeText(q.text, sx(q.x), sy(q.y) - 14);
+      ctx.fillStyle = q.c;
+      ctx.fillText(q.text, sx(q.x), sy(q.y) - 14);
+    }
+    ctx.textAlign = 'left';
     ctx.globalAlpha = 1;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     if (glow > 0) {
@@ -852,7 +872,7 @@
     ctx.fillRect(bx, by, bw * (sap / SAP_MAX), 12);
     ctx.fillStyle = 'rgba(20,30,20,0.8)';
     ctx.textAlign = 'right';
-    ctx.fillText(INF_SAP ? 'sap ∞' : 'sap', bx - 6, by + 11);
+    ctx.fillText('sap', bx - 6, by + 11);
     ctx.textAlign = 'center';
 
     if (toast && state === 'growing') {
