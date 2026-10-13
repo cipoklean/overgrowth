@@ -13,7 +13,7 @@
   const TURN_RATE = 2.8;          // rad/s at full bend
   const MAX_LEAN = 1.2;           // rad from vertical
   const SAP_MAX = 100;
-  const SAP_DRAIN = 12;           // per second
+  const SAP_DRAIN = 9.5;          // per second
   const GRAFT_SAP = 60;
   const GRAFT_RADIUS = 11;
   const GRAFT_MIN_HEIGHT = 120;   // no grafting on the shared trunk near the root
