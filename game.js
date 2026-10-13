@@ -27,6 +27,8 @@
   const BEETLE_SAP = 15;          // sap for squashing one
   const CANOPY_SAP = 30;          // sap bonus for crossing a canopy line
   const SUN_CANOPY = 4;           // reaching this canopy line wins
+  // test mode: add ?infsap to the URL for a sap bar that never empties
+  const INF_SAP = typeof location !== 'undefined' && /[?&]infsap\b/.test(location.search);
 
   // ---------- canvas ----------
   const canvas = document.getElementById('game');
@@ -403,6 +405,7 @@
       }
       runHeight = Math.max(runHeight, tip.y);
       sap -= SAP_DRAIN * (frosted ? FROST_DRAIN : 1) * dt;
+      if (INF_SAP) sap = SAP_MAX;
       if (frosted && Math.random() < dt * 20) particles.push({ x: tip.x + (Math.random() - 0.5) * 14, y: tip.y + (Math.random() - 0.5) * 14, vx: (Math.random() - 0.5) * 15, vy: 30, life: 0.6, max: 0.6, c: '#e8f6ff', r: 1.6 });
 
       const last = branch[branch.length - 1];
@@ -849,7 +852,7 @@
     ctx.fillRect(bx, by, bw * (sap / SAP_MAX), 12);
     ctx.fillStyle = 'rgba(20,30,20,0.8)';
     ctx.textAlign = 'right';
-    ctx.fillText('sap', bx - 6, by + 11);
+    ctx.fillText(INF_SAP ? 'sap ∞' : 'sap', bx - 6, by + 11);
     ctx.textAlign = 'center';
 
     if (toast && state === 'growing') {
