@@ -159,24 +159,136 @@
   let sunRun = 0;      // the run that first reached the sun (0 = not yet)
   let seen = {};       // first-time hints already shown
 
-  function load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
-      wood = d.wood || [];
-      bestHeight = d.bestHeight || 0;
-      runCount = d.runCount || 0;
-      sunRun = d.sunRun || 0;
-      seen = d.seen || {};
-    } catch (e) { /* fresh tree */ }
+  // ---------- saving ----------
+  // Inside Snapchat the tree lives in Snap's account-bound storage (localStorage is wiped when
+  // the Lens closes). Everywhere else it lives in localStorage. Wood is packed as integer deltas
+  // so a long climb fits Snap's 32 KiB-per-key, 100 KiB-total limits.
+  const SNAP_BUDGET = 90 * 1024;   // leave headroom under Snap's 100 KiB store
+  let loaded = false;
+
+  function packPts(pts) {
+    let px = 0, py = 0;
+    const out = [];
+    for (const p of pts) {
+      const x = Math.round(p[0]), y = Math.round(p[1]);
+      out.push((x - px).toString(36), (y - py).toString(36));
+      px = x; py = y;
+    }
+    return out.join(',');
   }
+  function unpackPts(str) {
+    const a = str ? str.split(',') : [];
+    const pts = [];
+    let x = 0, y = 0;
+    for (let i = 0; i + 1 < a.length; i += 2) {
+      x += parseInt(a[i], 36); y += parseInt(a[i + 1], 36);
+      pts.push([x, y]);
+    }
+    return pts;
+  }
+  function packWood(w) {
+    const o = { p: packPts(w.pts), a: w.age, s: w.seed };
+    if (w.cracked) o.c = 1;
+    if (w.gone && w.gone.length) o.g = w.gone;
+    return o;
+  }
+  function unpackWood(o) {
+    if (o.pts) return o;  // old unpacked save
+    return { pts: unpackPts(o.p), age: o.a || 0, cracked: !!o.c, seed: o.s || 0, gone: o.g };
+  }
+  function packState() {
+    return { v: 2, wood: wood.map(packWood), bestHeight: Math.round(bestHeight), runCount, sunRun, seen };
+  }
+  function applyState(d) {
+    if (!d) return;
+    wood = (d.wood || []).map(unpackWood);
+    bestHeight = d.bestHeight || 0;
+    runCount = d.runCount || 0;
+    sunRun = d.sunRun || 0;
+    seen = d.seen || {};
+  }
+
+  const snap = window.snapchat;
+  let useSnap = false;
+  let snapWoodKeys = 0;     // how many wood_N keys are stored now
+  let saving = Promise.resolve();
+
+  // trim the oldest wood (cracked first) until the packed tree fits the budget
+  function fitBudget(packed) {
+    const size = () => JSON.stringify(packed).length;
+    while (packed.wood.length > 1 && size() > SNAP_BUDGET) {
+      let i = wood.findIndex(w => w.cracked);
+      if (i < 0) i = 0;
+      wood.splice(i, 1);
+      packed.wood.splice(i, 1);
+    }
+    return packed;
+  }
+
+  // split wood across keys of at most ~28 KiB each
+  function chunkWood(list) {
+    const chunks = [];
+    let cur = [], len = 0;
+    for (const w of list) {
+      const n = JSON.stringify(w).length + 1;
+      if (cur.length && len + n > 28 * 1024) { chunks.push(cur); cur = []; len = 0; }
+      cur.push(w); len += n;
+    }
+    if (cur.length) chunks.push(cur);
+    return chunks;
+  }
+
+  async function snapSave() {
+    const packed = fitBudget(packState());
+    const chunks = chunkWood(packed.wood);
+    const meta = { v: 2, bestHeight: packed.bestHeight, runCount, sunRun, seen, chunks: chunks.length };
+    for (let i = 0; i < chunks.length; i++) await snap.storage.set('wood_' + i, chunks[i]);
+    for (let i = chunks.length; i < snapWoodKeys; i++) await snap.storage.remove('wood_' + i);
+    snapWoodKeys = chunks.length;
+    await snap.storage.set('meta', meta);
+  }
+
   function save() {
+    if (!loaded) return;  // never overwrite a save that hasn't been read yet
+    if (useSnap) {
+      saving = saving.then(snapSave).catch(e => console.warn('Overgrowth save failed:', e && e.message));
+      return;
+    }
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ wood, bestHeight, runCount, sunRun, seen }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(packState()));
     } catch (e) { /* storage full or blocked; tree lives for this session */ }
   }
+
+  async function load() {
+    try {
+      if (snap && !snap.isStub) {
+        await snap.init();
+        useSnap = snap.isSupported('storage');
+      }
+    } catch (e) { useSnap = false; }
+    try {
+      if (useSnap) {
+        const m = await snap.storage.get('meta');
+        if (m.found && m.value) {
+          const d = m.value;
+          d.wood = [];
+          for (let i = 0; i < (d.chunks || 0); i++) {
+            const c = await snap.storage.get('wood_' + i);
+            if (c.found && Array.isArray(c.value)) d.wood.push(...c.value);
+          }
+          snapWoodKeys = d.chunks || 0;
+          applyState(d);
+        }
+      } else {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) applyState(JSON.parse(raw));
+      }
+    } catch (e) { /* fresh tree */ }
+    loaded = true;
+  }
   load();
+  // a Lens closes with a swipe and no teardown, so save when the page hides
+  document.addEventListener('visibilitychange', () => { if (document.hidden && state !== 'growing') save(); });
 
   // ---------- input ----------
   let holding = false;
@@ -184,6 +296,7 @@
     if (e) e.preventDefault();
     audio.unlock();
     holding = true;
+    if (!loaded) return;
     if (state === 'ready') startGrowing();
     else if (state === 'ended' && endTimer <= 0) { resetRun(); startGrowing(); }
   }
@@ -201,9 +314,20 @@
     if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter') release(e);
   });
 
-  document.getElementById('reset').addEventListener('click', (e) => {
+  // two taps to cut the tree down (no confirm(): Snapchat's webview has no dialogs)
+  const resetBtn = document.getElementById('reset');
+  let resetArmed = 0;
+  resetBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  resetBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (confirm('Cut down your whole tree and start from a seed?')) clearTree();
+    if (resetArmed) {
+      clearTimeout(resetArmed); resetArmed = 0;
+      resetBtn.textContent = 'New tree';
+      clearTree();
+    } else {
+      resetBtn.textContent = 'Tap again to cut it down';
+      resetArmed = setTimeout(() => { resetArmed = 0; resetBtn.textContent = 'New tree'; }, 3000);
+    }
   });
 
   function clearTree() {
@@ -897,7 +1021,7 @@
           : runCount === BEETLE_FROM_RUN
             ? 'Beetles are eating your wood. Touch one to squash it.'
             : 'Your last branch is wood now. Graft onto it to climb higher.',
-        'Tap or press Space to grow');
+        loaded ? 'Tap or press Space to grow' : 'Loading your tree…');
     } else if (state === 'ended' && endReason === 'sun') {
       const first = sunRun === runCount;
       banner('You reached the sun!',
