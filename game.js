@@ -197,7 +197,7 @@
     return { pts: unpackPts(o.p), age: o.a || 0, cracked: !!o.c, seed: o.s || 0, gone: o.g };
   }
   function packState() {
-    return { v: 2, wood: wood.map(packWood), bestHeight: Math.round(bestHeight), runCount, sunRun, seen };
+    return { v: 2, wood: wood.map(packWood), bestHeight: Math.round(bestHeight), runCount, sunRun, seen, lbSent };
   }
   function applyState(d) {
     if (!d) return;
@@ -206,9 +206,40 @@
     runCount = d.runCount || 0;
     sunRun = d.sunRun || 0;
     seen = d.seen || {};
+    lbSent = d.lbSent || 0;
   }
 
   const snap = window.snapchat;
+
+  // ---------- leaderboard (Snapchat only) ----------
+  // One board, higher is better: your best height until you reach the sun,
+  // then 10000 minus the runs it took, so a sun in fewer runs always ranks higher.
+  let canBoard = false;
+  let lbSent = 0;                 // best score already submitted
+  const boardBtn = document.getElementById('board');
+  function boardScore() { return sunRun ? 10000 - sunRun : Math.floor(bestHeight); }
+  async function submitBoard() {
+    const score = boardScore();
+    if (!canBoard || score <= lbSent) return;
+    const prev = lbSent;
+    lbSent = score;   // claim it now so overlapping run-ends don't double-submit
+    try {
+      await snap.leaderboards.submitScore({ score });
+      save();
+    } catch (e) {
+      if (lbSent === score) lbSent = prev;
+      console.warn('Leaderboard unavailable:', e && e.message);
+    }
+  }
+  if (boardBtn) {
+    boardBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    boardBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!canBoard) return;
+      await submitBoard();
+      try { await snap.leaderboards.show(); } catch (err) { console.warn('Leaderboard unavailable:', err && err.message); }
+    });
+  }
   let useSnap = false;
   let snapWoodKeys = 0;     // how many wood_N keys are stored now
   let saving = Promise.resolve();
@@ -241,7 +272,7 @@
   async function snapSave() {
     const packed = fitBudget(packState());
     const chunks = chunkWood(packed.wood);
-    const meta = { v: 2, bestHeight: packed.bestHeight, runCount, sunRun, seen, chunks: chunks.length };
+    const meta = { v: 2, bestHeight: packed.bestHeight, runCount, sunRun, seen, lbSent, chunks: chunks.length };
     for (let i = 0; i < chunks.length; i++) await snap.storage.set('wood_' + i, chunks[i]);
     for (let i = chunks.length; i < snapWoodKeys; i++) await snap.storage.remove('wood_' + i);
     snapWoodKeys = chunks.length;
@@ -264,6 +295,8 @@
       if (snap && !snap.isStub) {
         await snap.init();
         useSnap = snap.isSupported('storage');
+        canBoard = snap.isSupported('leaderboards');
+        if (canBoard) boardBtn.style.display = '';
       }
     } catch (e) { useSnap = false; }
     try {
@@ -465,6 +498,7 @@
     const newBest = runHeight > bestHeight;
     bestHeight = Math.max(bestHeight, runHeight);
     save();
+    submitBoard();
     if (reason === 'sun') {
       glow = 1.6;
       shake = 8;
