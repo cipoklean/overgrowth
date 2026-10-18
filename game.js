@@ -158,6 +158,7 @@
   let runCount = 0;
   let sunRun = 0;      // the run that first reached the sun (0 = not yet)
   let seen = {};       // first-time hints already shown
+  let muted = false;   // sound off, remembered between sessions
 
   // ---------- saving ----------
   // Inside Snapchat the tree lives in Snap's account-bound storage (localStorage is wiped when
@@ -197,7 +198,7 @@
     return { pts: unpackPts(o.p), age: o.a || 0, cracked: !!o.c, seed: o.s || 0, gone: o.g };
   }
   function packState() {
-    return { v: 2, wood: wood.map(packWood), bestHeight: Math.round(bestHeight), runCount, sunRun, seen, lbSent };
+    return { v: 2, wood: wood.map(packWood), bestHeight: Math.round(bestHeight), runCount, sunRun, seen, lbSent, muted };
   }
   function applyState(d) {
     if (!d) return;
@@ -207,6 +208,8 @@
     sunRun = d.sunRun || 0;
     seen = d.seen || {};
     lbSent = d.lbSent || 0;
+    muted = !!d.muted;
+    showMute();
   }
 
   const snap = window.snapchat;
@@ -272,7 +275,7 @@
   async function snapSave() {
     const packed = fitBudget(packState());
     const chunks = chunkWood(packed.wood);
-    const meta = { v: 2, bestHeight: packed.bestHeight, runCount, sunRun, seen, lbSent, chunks: chunks.length };
+    const meta = { v: 2, bestHeight: packed.bestHeight, runCount, sunRun, seen, lbSent, muted, chunks: chunks.length };
     for (let i = 0; i < chunks.length; i++) await snap.storage.set('wood_' + i, chunks[i]);
     for (let i = chunks.length; i < snapWoodKeys; i++) await snap.storage.remove('wood_' + i);
     snapWoodKeys = chunks.length;
@@ -342,12 +345,30 @@
     if (e.repeat) return;
     if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter') press(e);
     if (e.code === 'KeyR' && e.shiftKey) clearTree();
+    if (e.code === 'KeyM') toggleMute();
   });
   window.addEventListener('keyup', (e) => {
     if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter') release(e);
   });
 
   // two taps to cut the tree down (no confirm(): Snapchat's webview has no dialogs)
+  const muteBtn = document.getElementById('mute');
+  function showMute() {
+    const btn = document.getElementById('mute');  // may run before muteBtn is set, during load
+    if (!btn) return;
+    btn.textContent = muted ? '🔇' : '🔊';
+    btn.title = muted ? 'Sound off' : 'Sound on';
+  }
+  function toggleMute() {
+    muted = !muted;
+    audio.setMuted(muted);
+    showMute();
+    save();
+  }
+  if (muteBtn) {
+    muteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    muteBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMute(); });
+  }
   const resetBtn = document.getElementById('reset');
   let resetArmed = 0;
   resetBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -369,7 +390,7 @@
 
   // ---------- audio (tiny synth, no assets) ----------
   const audio = (() => {
-    let ac = null, windGain = null;
+    let ac = null, windGain = null, master = null;
     function makeWind() {
       const len = ac.sampleRate * 2;
       const buf = ac.createBuffer(1, len, ac.sampleRate);
@@ -380,22 +401,29 @@
       const f = ac.createBiquadFilter();
       f.type = 'bandpass'; f.frequency.value = 500; f.Q.value = 0.7;
       windGain = ac.createGain(); windGain.gain.value = 0;
-      src.connect(f); f.connect(windGain); windGain.connect(ac.destination);
+      src.connect(f); f.connect(windGain); windGain.connect(master);
       src.start();
     }
     return {
       unlock() {
         if (!ac) {
-          try { ac = new (window.AudioContext || window.webkitAudioContext)(); makeWind(); } catch (e) { ac = null; }
+          try {
+            ac = new (window.AudioContext || window.webkitAudioContext)();
+            master = ac.createGain(); master.gain.value = muted ? 0 : 1; master.connect(ac.destination);
+            makeWind();
+          } catch (e) { ac = null; }
         }
         if (ac && ac.state === 'suspended') ac.resume();
+      },
+      setMuted(m) {
+        if (master) master.gain.setTargetAtTime(m ? 0 : 1, ac.currentTime, 0.02);
       },
       wind(level) {
         if (!windGain) return;
         windGain.gain.setTargetAtTime(level * 0.09, ac.currentTime, 0.15);
       },
       blip(freq, dur, type = 'sine', vol = 0.15, slide = 0) {
-        if (!ac) return;
+        if (!ac || muted) return;
         const t = ac.currentTime;
         const o = ac.createOscillator();
         const g = ac.createGain();
@@ -404,7 +432,7 @@
         if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
         g.gain.setValueAtTime(vol, t);
         g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-        o.connect(g); g.connect(ac.destination);
+        o.connect(g); g.connect(master);
         o.start(t); o.stop(t + dur);
       },
     };
