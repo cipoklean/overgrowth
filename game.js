@@ -364,7 +364,7 @@
   });
 
   function clearTree() {
-    wood = []; bestHeight = 0; runCount = 0; sunRun = 0; save(); resetRun();
+    wood = []; bestHeight = 0; runCount = 0; sunRun = 0; fell = null; save(); resetRun();
   }
 
   // ---------- audio (tiny synth, no assets) ----------
@@ -413,6 +413,7 @@
   // ---------- run state ----------
   let state = 'ready';     // ready | growing | ended
   let tip, angle, angVel, sap, branch, grafted, endReason, endTimer, runHeight;
+  let fell = null;        // where the last run ended: { x, y, h, best, prevBest }
   let cam = 0, shake = 0, hitstop = 0, flash = 0, glow = 0;
   let canopyHit = 0;       // highest canopy line crossed this run
   let toast = null;        // { title, body, t } short message over the play area
@@ -496,6 +497,7 @@
     runCount += 1;
     if (reason === 'sun' && !sunRun) sunRun = runCount;
     const newBest = runHeight > bestHeight;
+    fell = { x: tip.x, y: tip.y, h: Math.floor(runHeight), best: newBest && runHeight > 50, prevBest: Math.floor(bestHeight) };
     bestHeight = Math.max(bestHeight, runHeight);
     save();
     submitBoard();
@@ -973,6 +975,47 @@
       ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.28, 0, Math.PI * 2); ctx.fill();
     }
 
+    // your best height so far, as a goal line
+    if (bestHeight > 120) {
+      const y = sy(bestHeight);
+      if (y > -10 && y < H + 10) {
+        ctx.strokeStyle = 'rgba(255,214,90,0.7)';
+        ctx.setLineDash([4, 6]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(sx(0), y); ctx.lineTo(sx(WORLD_W), y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(120,80,10,0.85)';
+        ctx.font = `600 ${Math.max(11, 12 * scale)}px system-ui, sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.fillText(`Best ${Math.floor(bestHeight)}`, sx(WORLD_W - 8), y - 5);
+        ctx.textAlign = 'left';
+      }
+    }
+
+    // where the last run ended, until the next one starts
+    if (fell && state !== 'growing' && endReason !== 'sun') {
+      const x = sx(fell.x), y = sy(fell.y);
+      const pulse = 1 + Math.sin(performance.now() / 220) * 0.18;
+      ctx.strokeStyle = fell.best ? 'rgba(255,200,60,0.95)' : 'rgba(200,60,50,0.9)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(x, y, 13 * scale * pulse, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 5 * scale, y - 5 * scale); ctx.lineTo(x + 5 * scale, y + 5 * scale);
+      ctx.moveTo(x + 5 * scale, y - 5 * scale); ctx.lineTo(x - 5 * scale, y + 5 * scale);
+      ctx.stroke();
+      ctx.font = `600 ${Math.max(11, 12 * scale)}px system-ui, sans-serif`;
+      const label = `Fell here · ${fell.h}`;
+      const right = x > W / 2;
+      ctx.textAlign = right ? 'right' : 'left';
+      ctx.fillStyle = 'rgba(255,252,240,0.85)';
+      const tw = ctx.measureText(label).width;
+      const lx = right ? x - 18 * scale : x + 18 * scale;
+      ctx.fillRect(right ? lx - tw - 4 : lx - 4, y - 9, tw + 8, 18);
+      ctx.fillStyle = '#3a2a1a';
+      ctx.fillText(label, lx, y + 4);
+      ctx.textAlign = 'left';
+    }
+
     // the living branch
     if (state !== 'ready' || branch.length > 1) {
       drawBranch(branch.concat([[tip.x, tip.y]]), '#a8743f', 11, false);
@@ -1065,7 +1108,14 @@
         endTimer <= 0 ? 'Tap to keep growing' : '');
     } else if (state === 'ended') {
       const why = endReason === 'thorn' ? 'Thorns got you.' : endReason === 'wall' ? 'You grew out of the light.' : 'Out of sap.';
-      banner(why, `This branch reached ${Math.floor(runHeight)}. It stays as wood for your next run.`, endTimer <= 0 ? 'Tap to grow again' : '');
+      const h = fell ? fell.h : Math.floor(runHeight);
+      const score = fell && fell.best
+        ? `Reached ${h} · New best!`
+        : fell && fell.prevBest > 0 ? `Reached ${h} · ${fell.prevBest - h} short of your best` : `Reached ${h}`;
+      const tip2 = endReason === 'thorn' ? 'Steer earlier to slip past thorns.'
+        : endReason === 'wall' ? 'Keep away from the shaded edges.'
+        : 'Graft onto old wood or grab dew to refill sap.';
+      banner(fell && fell.best ? `New best! ${why}` : why, `${score}\n${tip2}\nThis branch stays as wood for your next run.`, endTimer <= 0 ? 'Tap to grow again' : '');
     }
     ctx.textAlign = 'left';
   }
@@ -1073,18 +1123,19 @@
   function banner(title, body, cta) {
     const cy = H * 0.36;
     ctx.fillStyle = 'rgba(255,252,240,0.82)';
-    const bw = Math.min(W - 40, 420), bh = 130;
+    const lines = body.split('\n');
+    const bw = Math.min(W - 40, 420), bh = 92 + lines.length * 19;
     roundRect((W - bw) / 2, cy - 48, bw, bh, 14);
     ctx.fill();
     ctx.fillStyle = '#2e3b22';
     ctx.font = '700 24px system-ui, sans-serif';
-    ctx.fillText(title, W / 2, cy - 14);
+    ctx.fillText(title, W / 2, cy - 14, bw - 24);
     ctx.font = '14px system-ui, sans-serif';
-    body.split('\n').forEach((line, i) => ctx.fillText(line, W / 2, cy + 12 + i * 19, bw - 24));
+    lines.forEach((line, i) => ctx.fillText(line, W / 2, cy + 12 + i * 19, bw - 24));
     if (cta) {
       ctx.font = '600 14px system-ui, sans-serif';
       ctx.fillStyle = '#5a8a2e';
-      ctx.fillText(cta, W / 2, cy + 68);
+      ctx.fillText(cta, W / 2, cy + 30 + lines.length * 19);
     }
   }
 
