@@ -9,10 +9,12 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #cfe3d0; touch-action: none; -webkit-user-select: none; user-select: none; }
   canvas { display: block; }
   #reset { position: fixed; right: 12px; bottom: 12px; font: 12px system-ui, sans-serif; padding: 6px 10px; border: 0; border-radius: 8px; background: rgba(40,30,20,.55); color: #f4ead8; cursor: pointer; }
+  #board { position: fixed; right: 100px; bottom: 12px; font: 12px system-ui, sans-serif; padding: 6px 10px; border: 0; border-radius: 8px; background: rgba(40,30,20,.55); color: #f4ead8; cursor: pointer; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<button id="board" title="Leaderboard" style="display:none">Leaderboard</button>
 <button id="reset" title="Start a new tree">New tree</button>
 <script src="./snap-api.js"></script>
 <script src="./game.js"></script>
