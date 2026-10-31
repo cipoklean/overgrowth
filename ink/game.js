@@ -207,7 +207,7 @@ function resize() {
   W = window.innerWidth; H = window.innerHeight;
   DPR = Math.min(2, window.devicePixelRatio || 1);
   cv.width = W * DPR | 0; cv.height = H * DPR | 0; cv.style.width = W + 'px'; cv.style.height = H + 'px';
-  K = Math.min(W / 520, H / 380);
+  K = Math.min(W / 570, H / 400);   // leave a margin so both torn edges always show
   CX = W / 2; GY = H * 0.6;
   blastX = W / 2 / K + 70; blastY = (H - GY) / K + 70;
   bg.width = cv.width; bg.height = cv.height;
@@ -542,7 +542,9 @@ function tryHit(a, d, m) {
   a.hitDone = true;
   const facing = sign(a.x - d.x) === d.face;
   if (d.st === 'block' && facing && !m.low) {
-    if (clock - d.blockStart <= 0.13) parry(d, a, pt); else blocked(d, a, pt);
+    // only the player and the parry rivals (Quill, The Editor) can parry; they still can't parry a jab they didn't really read
+    const canParry = d.isP || (R.parry && (m !== MOVES.jab || know() > 0.6 && Math.random() < 0.35));
+    if (canParry && clock - d.blockStart <= 0.13) parry(d, a, pt); else blocked(d, a, pt);
   } else hitLand(d, a, m, pt);
 }
 function hitLand(d, a, m, pt) {
@@ -567,13 +569,18 @@ function hitLand(d, a, m, pt) {
   if (navigator.vibrate && d.isP) try { navigator.vibrate(30 + m.dmg * 3); } catch (e) {}
 }
 function blocked(d, a, pt) {
-  d.dmg += 1; d.vx = a.face * 150; d.st = 'blockstun'; d.stun = 0.14;
+  d.dmg += 1; d.vx = a.face * 150; d.st = 'blockstun'; d.stun = 0.1;
+  // a blocked strike leaves the attacker briefly open, so blocking then hitting back works
+  if (a.st === 'atk') { const m = MOVES[a.mv]; a.st = 'blockstun'; a.mv = null; a.stun = m.re + 0.12; }
   d.ink = Math.min(INK_FULL, d.ink + 5);
   a.vx *= 0.2;
   hitstop = 0.03; shake = Math.max(shake, 2);
   for (let i = 0; i < 8; i++) parts.push({ x: pt.x, y: pt.y, vx: rnd(-160, 160), vy: rnd(-220, 20), life: 0.3, max: 0.3, col: '#ffffff', r: 2, g: 0.4 });
   sfx.block();
-  if (!d.isP) { ai.think = 0.05; }
+  if (!d.isP) {
+    ai.think = 0.05;
+    if (Math.random() < 0.35 + 0.6 * know()) ai.sched = { t: 0.1 + R.react * 0.3, action: 'atk', atk: Math.random() < 0.7 ? 'jab' : 'sweep' };
+  }
 }
 function parry(d, a, pt) {
   if (a.shot) return;
@@ -1116,6 +1123,20 @@ function frame(now) {
 }
 document.addEventListener('visibilitychange', () => { running = !document.hidden; last = 0; acc = 0; tL = tR = null; });
 window.addEventListener('resize', resize);
+// stop the browser zooming: block pinch, double-tap and gesture zoom, and snap back if it zoomed anyway
+const noZoom = e => { if (e.touches && e.touches.length > 1 || e.type === 'gesturestart' || e.type === 'dblclick') e.preventDefault(); };
+['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'dblclick'].forEach(t => document.addEventListener(t, noZoom, { passive: false }));
+let lastTouchEnd = 0;
+document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastTouchEnd < 350) e.preventDefault(); lastTouchEnd = n; }, { passive: false });
+function unzoom() {
+  const vv = window.visualViewport;
+  if (!vv || vv.scale <= 1.01) return;
+  const meta = document.querySelector('meta[name=viewport]');
+  if (meta) { const c = meta.content; meta.content = c + ',minimum-scale=1'; setTimeout(() => { meta.content = c; }, 60); }
+  window.scrollTo(0, 0);
+}
+if (window.visualViewport) window.visualViewport.addEventListener('resize', unzoom);
+setInterval(unzoom, 1000);
 const muteBtn = document.getElementById('mute');
 if (muteBtn) muteBtn.addEventListener('click', e => { e.stopPropagation && e.stopPropagation(); audioInit(); setMuted(!save.muted); });
 setMuted(save.muted);
