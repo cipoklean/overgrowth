@@ -26,7 +26,8 @@ const ease = t => 1 - (1 - t) * (1 - t);
 let W = 0, H = 0, DPR = 1, K = 1, CX = 0, GY = 0, blastX = 400, blastY = 300;
 
 // ---------- save ----------
-let save = { rival: 0, cleared: false, muted: false };
+let save = { rival: 0, cleared: false, muted: false, tut: false };
+let paused = false;
 try { Object.assign(save, JSON.parse(localStorage.getItem(SKEY) || '{}')); } catch (e) {}
 function persist() { try { localStorage.setItem(SKEY, JSON.stringify(save)); } catch (e) {} }
 
@@ -37,7 +38,7 @@ const RIVALS = [
   { name: 'Blot',       col: '#7a3cff', trait: 'Heavy, hard to launch',      learn: 0.5,  react: 0.30, think: 0.38, aggr: 0.5, weight: 1.45, speed: 0.82 },
   { name: 'Smudge',     col: '#0b9a73', trait: 'Blinks behind you',          learn: 0.55, react: 0.26, think: 0.32, aggr: 0.55, teleport: true },
   { name: 'Quill',      col: '#d98300', trait: 'Parries what it reads',      learn: 0.6,  react: 0.24, think: 0.30, aggr: 0.45, parry: true },
-  { name: 'Sketch',     col: '#cf2328', trait: 'Relentless',                 learn: 0.6,  react: 0.22, think: 0.2,  aggr: 0.85 },
+  { name: 'Sketch',     col: '#cf2328', trait: 'Relentless',                 learn: 0.48, react: 0.26, think: 0.27, aggr: 0.75 },
   { name: 'Stencil',    col: '#0f8fbf', trait: 'Copies your favourite move', learn: 0.7,  react: 0.22, think: 0.26, aggr: 0.6, mirror: true },
   { name: 'The Editor', col: '#b5179e', trait: 'Reads everything',           learn: 0.95, react: 0.17, think: 0.22, aggr: 0.65, parry: true, teleport: true, weight: 1.15 }
 ];
@@ -251,6 +252,7 @@ function startMatch(idx) {
   makeStage();
   resetRound();
   setMode('vs');
+  if (!save.tut) { save.tut = true; persist(); setPaused(true); }
 }
 function resetRound() {
   P = makeFighter(true); A = makeFighter(false);
@@ -258,6 +260,14 @@ function resetRound() {
   ai.think = 0.6; ai.sched = null; ai.blockHold = 0; ai.walkT = 0;
 }
 function setMode(m) { mode = m; modeT = 0; }
+function canPause() { return mode === 'vs' || mode === 'ready' || mode === 'fight' || mode === 'roundEnd'; }
+function setPaused(v) {
+  if (v && !canPause()) return;
+  paused = v; tL = tR = null; buf.atkT = buf.jump = buf.dash = buf.sp = 0;
+  for (const k in keys) keys[k] = false;
+  if (!v && mode === 'fight') { buf.atkT = 0; }
+  const b = document.getElementById('pause'); if (b) b.textContent = v ? '▶' : '⏸';
+}
 
 // ---------- input ----------
 const keys = {};
@@ -281,6 +291,8 @@ window.addEventListener('keydown', e => {
   if (keys[k]) return;
   keys[k] = true;
   if (k === 'm') setMuted(!save.muted);
+  if (k === 'p' || k === 'escape') { setPaused(!paused); return; }
+  if (paused) { if (k === ' ' || k === 'enter') setPaused(false); return; }
   if (mode !== 'fight') { if (k === ' ' || k === 'enter' || k === 'j') menuTap(); return; }
   if (k === 'j') queueAtk('jab');
   if (k === 'k') queueAtk('heavy');
@@ -296,6 +308,7 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault && e.preventDefault();
   if (e.pointerType === 'touch') isTouch = true;
   audioInit();
+  if (paused) { setPaused(false); return; }
   if (mode !== 'fight' && mode !== 'ready') { menuTap(); return; }
   const x = e.clientX, y = e.clientY;
   const ib = inkBtn();
@@ -963,6 +976,7 @@ function render() {
 
   if (whiteT > 0) { ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.fillRect(0, 0, W, H); }
   drawHUD();
+  if (paused) drawHelp();
 }
 
 function drawBubble() {
@@ -1099,6 +1113,43 @@ function drawInkBtn() {
   if (!isTouch) text('U', b.x, b.y + 13, 9, full ? PAPER : '#5a5348', 'center', '800');
   ctx.globalAlpha = 1;
 }
+function drawHelp() {
+  veil(0.93);
+  const s = Math.min(1, W / 400, H / 760), x = CX;
+  let y = Math.max(44, H * 0.08);
+  text('PAUSED', x, y, 34 * s, INK, 'center', '900', 5); y += 40 * s;
+  text('Knock ' + R.name + ' off the paper. Best of 3 rounds.', x, y, 14 * s, '#5a5348', 'center', '700'); y += 22 * s;
+  text('The more % damage, the further they fly.', x, y, 14 * s, '#5a5348', 'center', '700'); y += 32 * s;
+  const rows = isTouch ? [
+    ['LEFT THUMB', 'drag ◀ ▶ to move · flick ↑ to jump (twice in the air)'],
+    ['TAP', 'jab: fast and safe'],
+    ['SWIPE →', 'kick: slow, sends them flying'],
+    ['SWIPE ↑', 'uppercut: launches upward, beats jumpers'],
+    ['SWIPE ↓', 'sweep: low, beats blocking'],
+    ['SWIPE ←', 'dash back'],
+    ['HOLD', 'block · block just as a hit lands = PARRY'],
+    ['INK', 'fills as you land hits · tap it to throw a blot']
+  ] : [
+    ['A / D', 'move · W or Space jump (twice in the air)'],
+    ['J', 'jab: fast and safe'],
+    ['K', 'kick: slow, sends them flying'],
+    ['I', 'uppercut: launches upward, beats jumpers'],
+    ['L', 'sweep: low, beats blocking'],
+    ['SHIFT', 'dash back'],
+    ['S', 'block · block just as a hit lands = PARRY'],
+    ['U', 'throw ink blot when the INK meter is full']
+  ];
+  for (const [k, d] of rows) {
+    text(k, x, y, 13 * s, '#d8262c', 'center', '900');
+    text(d, x, y + 17 * s, 12.5 * s, INK, 'center', '700');
+    y += 42 * s;
+  }
+  y += 10 * s;
+  text('Your rival learns your habits. Mix it up.', x, y, 14 * s, R.col, 'center', '800'); y += 40 * s;
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 4 + performance.now() / 250);
+  text(isTouch ? 'Tap to continue' : 'Press Space to continue', x, Math.min(H - 40, y), 20 * s, INK, 'center', '900');
+  ctx.globalAlpha = 1;
+}
 function veil(a) { ctx.fillStyle = 'rgba(244,236,216,' + a + ')'; ctx.fillRect(0, 0, W, H); }
 function dmgCol(d, base) { return d > 120 ? '#d8262c' : d > 70 ? '#c45a00' : base; }
 function pips(x, y, n, col, align) {
@@ -1116,12 +1167,12 @@ function frame(now) {
   let dt = (now - last) / 1000; last = now;
   if (dt > 0.1) dt = 0.1;
   if (slowT > 0) { slowT -= dt; ts = 0.3; } else ts = 1;
-  if (running) { acc += dt * ts; while (acc >= DT) { step(DT); acc -= DT; } }
+  if (running && !paused) { acc += dt * ts; while (acc >= DT) { step(DT); acc -= DT; } }
   render();
   if (running) musicTick();
   requestAnimationFrame(frame);
 }
-document.addEventListener('visibilitychange', () => { running = !document.hidden; last = 0; acc = 0; tL = tR = null; });
+document.addEventListener('visibilitychange', () => { running = !document.hidden; last = 0; acc = 0; tL = tR = null; if (document.hidden) setPaused(true); });
 window.addEventListener('resize', resize);
 // stop the browser zooming: block pinch, double-tap and gesture zoom, and snap back if it zoomed anyway
 const noZoom = e => { if (e.touches && e.touches.length > 1 || e.type === 'gesturestart' || e.type === 'dblclick') e.preventDefault(); };
@@ -1137,6 +1188,8 @@ function unzoom() {
 }
 if (window.visualViewport) window.visualViewport.addEventListener('resize', unzoom);
 setInterval(unzoom, 1000);
+const pauseBtn = document.getElementById('pause');
+if (pauseBtn) pauseBtn.addEventListener('click', e => { e.stopPropagation && e.stopPropagation(); audioInit(); setPaused(!paused); });
 const muteBtn = document.getElementById('mute');
 if (muteBtn) muteBtn.addEventListener('click', e => { e.stopPropagation && e.stopPropagation(); audioInit(); setMuted(!save.muted); });
 setMuted(save.muted);
