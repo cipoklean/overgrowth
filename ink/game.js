@@ -441,6 +441,7 @@ function updateFighter(f, o, dt) {
     if (f.st === 'hit') puff(f.x, 0, f.col, 5);
   }
   if (f.ground && !onPaper) { f.ground = false; }
+  if (f.ground) { f.y = 0; if (f.vy > 0 || f.vy < 0) f.vy = 0; }
   if (!f.ground && f.st === 'hit' && Math.hypot(f.vx, f.vy) > 380) f.spin += dt * 11 * -sign(f.vx) * f.face;
   if (f.ground) f.spin = 0;
   f.walkPh += Math.abs(f.vx) * dt * 0.07;
@@ -470,7 +471,7 @@ function hitLand(d, a, m, pt) {
   const kb = (m.base + m.grow * d.dmg) / d.weight;
   const ang = m.ang * D2R;
   d.vx = Math.cos(ang) * kb * a.face; d.vy = -Math.sin(ang) * kb;
-  if (d.vy < -40) d.ground = false;
+  if (d.vy < -40) d.ground = false; else if (d.ground) d.vy = 0;   // small hits slide along the paper instead of floating
   d.st = 'hit'; d.stun = 0.18 + kb * 0.0007; d.mv = null; d.flash = 0.1;
   if (d.isP && buf) buf.atkT = 0;
   a.vx *= 0.3;
