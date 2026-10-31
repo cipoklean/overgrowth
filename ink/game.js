@@ -50,7 +50,10 @@ const MOVES = {
   upper: { su: 0.13, ac: 0.10, re: 0.30, dmg: 8,  base: 330, grow: 2.5, ang: 80, limb: 'fh', lunge: 40,  w: 'upW', s: 'up',     label: 'UPPERCUT' },
   sweep: { su: 0.15, ac: 0.10, re: 0.26, dmg: 6,  base: 160, grow: 1.6, ang: 38, limb: 'ff', lunge: 70,  w: 'swW', s: 'sw',     label: 'SWEEP', low: true }
 };
-const HABIT_LABEL = { jab: 'JAB', heavy: 'KICK', upper: 'UPPERCUT', sweep: 'SWEEP', block: 'BLOCK', jump: 'JUMP' };
+const HABIT_LABEL = { jab: 'JAB', heavy: 'KICK', upper: 'UPPERCUT', sweep: 'SWEEP', block: 'BLOCK', jump: 'JUMP', blot: 'INK BLOT' };
+// ink special: a thrown blot. Charges by landing hits (and a little by taking them).
+const BLOT = { su: 0.2, re: 0.28, speed: 470, y: -66, r: 10, dmg: 13, base: 250, grow: 2.4, ang: 24 };
+const INK_FULL = 100;
 
 // ---------- poses (degrees; limbs measured from straight down, + = forward) ----------
 const P_ = {
@@ -129,8 +132,60 @@ const sfx = {
   go() { tone(523, 523, 0.1, 'triangle', 0.12); tone(784, 784, 0.25, 'triangle', 0.12, 0.08); },
   win() { [523, 659, 784, 1046].forEach((f, i) => tone(f, f, 0.2, 'triangle', 0.11, i * 0.1)); },
   lose() { [392, 330, 262].forEach((f, i) => tone(f, f * 0.97, 0.3, 'triangle', 0.1, i * 0.15)); },
-  read() { tone(660, 990, 0.12, 'sine', 0.07); }
+  read() { tone(660, 990, 0.12, 'sine', 0.07); },
+  charge() { tone(200, 700, 0.18, 'sawtooth', 0.06); },
+  throwInk() { noise(0.25, 400, 1, 0.3, 0, 120); tone(140, 60, 0.25, 'sine', 0.3); }
 };
+// ---------- music: a looping beat built from oscillators, no files ----------
+// 4 bars of A minor (Am F C G), 16 steps a bar. Drums join in fights; hats double up when it gets tense.
+const MUS = { bpm: 128, step: 0, next: 0, gain: null };
+const BASS = [45, 41, 48, 43];                // midi roots per bar
+const ARP = [0, 7, 12, 15, 12, 7, 3, 7];      // minor arpeggio offsets
+const mf = n => 440 * Math.pow(2, (n - 69) / 12);
+function mnote(freq, t, dur, type, vol, cut) {
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  if (cut) { const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cut; o.connect(f); f.connect(g); } else o.connect(g);
+  g.connect(MUS.gain); o.start(t); o.stop(t + dur + 0.03);
+}
+function mkick(t) {
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+  g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+  o.connect(g); g.connect(MUS.gain); o.start(t); o.stop(t + 0.25);
+}
+function mnoise(t, dur, freq, vol, type) {
+  const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain();
+  s.buffer = noiseBuf; f.type = type || 'highpass'; f.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(MUS.gain); s.start(t, Math.random() * 0.3); s.stop(t + dur + 0.02);
+}
+function musicTick() {
+  if (!AC || !noiseBuf || AC.state !== 'running') return;
+  if (!MUS.gain) { MUS.gain = AC.createGain(); MUS.gain.gain.value = 0.32; MUS.gain.connect(master); }
+  const spb = 60 / MUS.bpm / 4, now = AC.currentTime;
+  if (MUS.next < now - 0.1) MUS.next = now + 0.05;
+  const fight = mode === 'fight' || mode === 'ready' || mode === 'roundEnd' || mode === 'vs';
+  const tense = mode === 'fight' && (timer < 10 || (P && A && (P.dmg > 100 || A.dmg > 100)));
+  const target = save.muted ? 0 : (fight ? 0.32 : 0.18);
+  MUS.gain.gain.setTargetAtTime(target, now, 0.3);
+  while (MUS.next < now + 0.15) {
+    const t = MUS.next, st = MUS.step % 16, bar = (MUS.step >> 4) % 4, root = BASS[bar];
+    if (!save.muted) {
+      // bass: driving eighths, octave bounce
+      if (st % 2 === 0) mnote(mf(root + (st % 4 === 2 ? 12 : 0)), t, spb * 1.6, 'sawtooth', 0.16, 700);
+      // ink-pluck arpeggio
+      if (st % 2 === 0 || fight) mnote(mf(root + 24 + ARP[(st >> (fight ? 0 : 1)) % 8] + (st >= 8 && bar === 3 ? 2 : 0)), t, spb * 1.2, 'triangle', fight ? 0.06 : 0.08);
+      if (fight) {
+        if (st % 4 === 0) mkick(t);
+        if (st === 4 || st === 12) mnoise(t, 0.14, 1800, 0.35, 'bandpass');
+        if (st % 2 === 1 || tense) mnoise(t, 0.04, 7000, tense ? 0.14 : 0.1);
+      }
+    }
+    MUS.next += spb; MUS.step++;
+  }
+}
 function setMuted(m) {
   save.muted = m; persist();
   if (master) master.gain.value = m ? 0 : 0.6;
@@ -174,7 +229,7 @@ const sx = x => CX + x * K, sy = y => GY + y * K;
 let mode = 'title';   // title | vs | ready | fight | roundEnd | matchEnd | champ
 let modeT = 0, clock = 0, ts = 1, slowT = 0, hitstop = 0, shake = 0, whiteT = 0;
 let rivalIdx = 0, R = RIVALS[0], P, A, wins = [0, 0], roundNo = 1, timer = ROUND_TIME;
-let parts = [], blots = [], pops = [], impacts = [], bubble = null;
+let parts = [], blots = [], pops = [], impacts = [], bubble = null, shots = [];
 let lastResult = '', matchWon = false, isTouch = false, firstFight = true;
 
 function makeFighter(isP) {
@@ -183,7 +238,7 @@ function makeFighter(isP) {
     hitDone: false, lunged: false, stun: 0, jumps: 1, ground: true, blockStart: 0, walkPh: 0, spin: 0,
     col: isP ? INK : R.col, weight: isP ? 1 : (R.weight || 1), speed: isP ? 1 : (R.speed || 1),
     power: isP ? 1 : 1 + 0.04 * rivalIdx, flash: 0, out: false, pose: P_.idle,
-    in: { mx: 0, jump: false, atk: null, block: false, dash: false }, fresh: 0
+    in: { mx: 0, jump: false, atk: null, block: false, dash: false, special: false }, fresh: 0, ink: 0
   };
 }
 
@@ -199,14 +254,14 @@ function startMatch(idx) {
 }
 function resetRound() {
   P = makeFighter(true); A = makeFighter(false);
-  timer = ROUND_TIME; parts = []; pops = []; impacts = []; bubble = null;
+  timer = ROUND_TIME; parts = []; pops = []; impacts = []; bubble = null; shots = [];
   ai.think = 0.6; ai.sched = null; ai.blockHold = 0; ai.walkT = 0;
 }
 function setMode(m) { mode = m; modeT = 0; }
 
 // ---------- input ----------
 const keys = {};
-let buf = { atk: null, atkT: 0, jump: 0, dash: 0 };
+let buf = { atk: null, atkT: 0, jump: 0, dash: 0, sp: 0 };
 let tL = null, tR = null;
 function queueAtk(m) { buf.atk = m; buf.atkT = 0.16; }
 function menuTap() {
@@ -233,6 +288,7 @@ window.addEventListener('keydown', e => {
   if (k === 'l') queueAtk('sweep');
   if (k === 'w' || k === 'arrowup' || k === ' ') buf.jump = 0.16;
   if (k === 'shift') buf.dash = 0.16;
+  if (k === 'u' || k === 'e') buf.sp = 0.2;
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
@@ -242,6 +298,8 @@ cv.addEventListener('pointerdown', e => {
   audioInit();
   if (mode !== 'fight' && mode !== 'ready') { menuTap(); return; }
   const x = e.clientX, y = e.clientY;
+  const ib = inkBtn();
+  if (P && P.ink >= INK_FULL && Math.hypot(x - ib.x, y - ib.y) < ib.r + 10) { buf.sp = 0.2; return; }
   if (x < W * 0.42) tL = { id: e.pointerId, x0: x, y0: y, x, y, jumped: false };
   else tR = { id: e.pointerId, x0: x, y0: y, x, y, t0: performance.now(), swiped: false, blocking: false };
 });
@@ -281,14 +339,15 @@ function playerIntent(dt) {
   I.mx = clamp(mx, -1, 1);
   if (tR && !tR.swiped && performance.now() - tR.t0 > 170) tR.blocking = true;
   I.block = !!(keys['s'] || keys['arrowdown'] || (tR && tR.blocking));
-  buf.atkT -= dt; buf.jump -= dt; buf.dash -= dt;
+  buf.atkT -= dt; buf.jump -= dt; buf.dash -= dt; buf.sp -= dt;
+  I.special = buf.sp > 0;
   I.atk = buf.atkT > 0 ? buf.atk : null;
   I.jump = buf.jump > 0; I.dash = buf.dash > 0;
 }
 
 // ---------- AI: learns your habits during the match ----------
 const ai = { hab: {}, tot: 0, think: 0, sched: null, blockHold: 0, walk: 0, walkT: 0, lastBubble: -9, blinkCd: 0 };
-function resetAI() { ai.hab = { jab: 0, heavy: 0, upper: 0, sweep: 0, block: 0, jump: 0 }; ai.tot = 0; ai.lastBubble = -9; ai.blinkCd = 0; }
+function resetAI() { ai.hab = { jab: 0, heavy: 0, upper: 0, sweep: 0, block: 0, jump: 0, blot: 0 }; ai.tot = 0; ai.lastBubble = -9; ai.blinkCd = 0; }
 function share(k) { let s = 0; for (const h in ai.hab) s += ai.hab[h]; return s ? ai.hab[k] / s : 0; }
 function know() { return R.learn * Math.min(1, ai.tot / 6); }
 function topHabit() { let best = 'jab', b = -1; for (const h in ai.hab) if (ai.hab[h] > b) { b = ai.hab[h]; best = h; } return best; }
@@ -297,7 +356,8 @@ const TAUNTS = {
   heavy: ['Saw that kick.', 'Telegraphed.', 'Kick? Again?'],
   upper: ['Uppercut again?', 'Read it.', 'Predictable.'],
   sweep: ['Hop.', 'Not my ankles.', 'Sweep again?'],
-  jump: ['Up you go.', 'The air is mine.', 'Jumping again?']
+  jump: ['Up you go.', 'The air is mine.', 'Jumping again?'],
+  blot: ['Saw the ink coming.', 'Missed me.', 'Messy, and slow.']
 };
 function say(text) { bubble = { text, t: 1.6 }; ai.lastBubble = clock; sfx.read(); }
 
@@ -310,7 +370,12 @@ function observe(kind) {
   const pred = Math.random() < Math.min(0.9, read * 1.7);
   let delay = pred ? R.react * 0.3 : R.react * (0.85 + Math.random() * 0.5);
   let action = null;
-  if (MOVES[kind] && kind !== 'sweep' && dist < 115) {
+  if (kind === 'blot') {
+    const arrive = BLOT.su + Math.max(0, dist - 20) / BLOT.speed;
+    if (pred && R.parry && Math.random() < 0.6) { action = 'block'; delay = Math.max(0, arrive - 0.07); }
+    else if (pred) { action = 'jump'; delay = Math.max(0, arrive - 0.2); }
+    else action = 'block';
+  } else if (MOVES[kind] && kind !== 'sweep' && dist < 115) {
     action = 'block';
     if (R.parry && pred && kind !== 'jab') delay = Math.max(0, MOVES[kind].su - 0.07);
     if (R.teleport && pred && ai.blinkCd <= 0 && Math.random() < 0.6) action = 'blink';
@@ -324,7 +389,7 @@ function observe(kind) {
 
 function aiIntent(dt) {
   const I = A.in;
-  I.atk = null; I.jump = false; I.dash = false;
+  I.atk = null; I.jump = false; I.dash = false; I.special = false;
   ai.blinkCd -= dt;
   ai.blockHold -= dt; I.block = ai.blockHold > 0 && A.ground;
   ai.walkT -= dt; I.mx = ai.walkT > 0 ? ai.walk : 0;
@@ -342,7 +407,7 @@ function aiIntent(dt) {
     if (ai.sched.t <= 0) {
       const s = ai.sched; ai.sched = null;
       if (A.st === 'idle' || A.st === 'block') {
-        if (s.action === 'block') { ai.blockHold = 0.38; I.block = true; }
+        if (s.action === 'block') { ai.blockHold = s.kind === 'blot' ? 0.5 : 0.38; I.block = true; }
         else if (s.action === 'jump') I.jump = true;
         else if (s.action === 'upper') I.atk = 'upper';
         else if (s.action === 'atk') I.atk = s.atk;
@@ -356,6 +421,13 @@ function aiIntent(dt) {
   if (ai.think > 0) return;
   ai.think = R.think * (0.6 + Math.random() * 0.8);
   if (P.out) return;
+
+  // throw ink when charged: from range, or into a dizzy/recovering player
+  if (A.ink >= INK_FULL && A.ground && (dist > 110 || P.st === 'dizzy') && Math.random() < 0.35 + 0.4 * R.aggr) {
+    const dodgy = know() * (share('jump') + share('block'));   // a player who jumps/blocks a lot gets it later, up close
+    if (dist > 110 && Math.random() < dodgy) { ai.walk = dir; ai.walkT = 0.3; return; }
+    I.special = true; return;
+  }
 
   // punish
   if ((P.st === 'dizzy' || (P.st === 'hit' && P.ground) || (P.st === 'atk' && P.mt > MOVES[P.mv].su + MOVES[P.mv].ac)) && dist < 78) {
@@ -407,6 +479,10 @@ function updateFighter(f, o, dt) {
     if (!f.lunged && f.mt >= m.su) { f.lunged = true; f.vx += f.face * m.lunge * (f.ground ? 1 : 0.4); sfx.whoosh(f.mv === 'heavy'); }
     if (f.mt >= m.su && f.mt < m.su + m.ac && !f.hitDone) tryHit(f, o, m);
     if (f.mt >= m.su + m.ac + m.re) { f.st = 'idle'; f.mv = null; }
+  } else if (f.st === 'throw') {
+    f.mt += dt;
+    if (!f.lunged && f.mt >= BLOT.su) { f.lunged = true; fireBlot(f); }
+    if (f.mt >= BLOT.su + BLOT.re) { f.st = 'idle'; }
   } else if (f.st === 'hit' || f.st === 'blockstun' || f.st === 'dizzy') {
     f.stun -= dt; if (f.stun <= 0) f.st = 'idle';
   } else if (f.st === 'block') {
@@ -416,6 +492,10 @@ function updateFighter(f, o, dt) {
     if (f.ground) f.face = o.x === f.x ? f.face : sign(o.x - f.x);
     if (I.block && f.ground) {
       f.st = 'block'; f.blockStart = clock; if (f.isP) observe('block');
+    } else if (I.special && f.ink >= INK_FULL && f.ground) {
+      f.st = 'throw'; f.mt = 0; f.lunged = false; f.ink = 0; f.vx *= 0.3;
+      sfx.charge();
+      if (f.isP) { buf.sp = 0; observe('blot'); }
     } else if (I.atk && !(I.atk === 'sweep' && !f.ground)) {
       startMove(f, I.atk); if (f.isP) buf.atkT = 0;
     } else {
@@ -429,7 +509,7 @@ function updateFighter(f, o, dt) {
       if (f.isP) { buf.jump = 0; observe('jump'); }
     }
   }
-  if (f.ground && (f.st === 'atk' || f.st === 'block' || f.st === 'blockstun' || f.st === 'dizzy')) f.vx *= Math.exp(-dt * 8);
+  if (f.ground && (f.st === 'atk' || f.st === 'throw' || f.st === 'block' || f.st === 'blockstun' || f.st === 'dizzy')) f.vx *= Math.exp(-dt * 8);
   if (f.st === 'hit' && f.ground) f.vx *= Math.exp(-dt * 2.4);
 
   const prevY = f.y;
@@ -468,6 +548,8 @@ function tryHit(a, d, m) {
 function hitLand(d, a, m, pt) {
   const dmg = Math.round(m.dmg * a.power);
   d.dmg += dmg;
+  if (!a.shot) a.ink = Math.min(INK_FULL, a.ink + dmg * 4);
+  d.ink = Math.min(INK_FULL, d.ink + dmg * 1.5);
   const kb = (m.base + m.grow * d.dmg) / d.weight;
   const ang = m.ang * D2R;
   d.vx = Math.cos(ang) * kb * a.face; d.vy = -Math.sin(ang) * kb;
@@ -481,11 +563,12 @@ function hitLand(d, a, m, pt) {
   if (kb > 400) { impacts.push({ x: pt.x, y: pt.y, t: 0.14 }); whiteT = 0.05; }
   pop(pt.x, pt.y - 20, '+' + dmg + '%', d.col, 16 + m.dmg);
   sfx.hit(m.dmg);
-  if (!d.isP) { ai.hab[a.mv || 'jab'] = (ai.hab[a.mv || 'jab'] || 0) + 0.5; ai.sched = null; ai.blockHold = 0; }
+  if (!d.isP) { const hk = a.shot ? 'blot' : (a.mv || 'jab'); ai.hab[hk] = (ai.hab[hk] || 0) + 0.5; ai.sched = null; ai.blockHold = 0; }
   if (navigator.vibrate && d.isP) try { navigator.vibrate(30 + m.dmg * 3); } catch (e) {}
 }
 function blocked(d, a, pt) {
   d.dmg += 1; d.vx = a.face * 150; d.st = 'blockstun'; d.stun = 0.14;
+  d.ink = Math.min(INK_FULL, d.ink + 5);
   a.vx *= 0.2;
   hitstop = 0.03; shake = Math.max(shake, 2);
   for (let i = 0; i < 8; i++) parts.push({ x: pt.x, y: pt.y, vx: rnd(-160, 160), vy: rnd(-220, 20), life: 0.3, max: 0.3, col: '#ffffff', r: 2, g: 0.4 });
@@ -493,6 +576,7 @@ function blocked(d, a, pt) {
   if (!d.isP) { ai.think = 0.05; }
 }
 function parry(d, a, pt) {
+  if (a.shot) return;
   a.st = 'dizzy'; a.stun = 0.6; a.mv = null; a.vx = -a.face * 130;
   d.st = 'idle';
   hitstop = 0.1; shake = Math.max(shake, 7); whiteT = 0.08;
@@ -518,6 +602,53 @@ function timeUp() {
   if (P.dmg < A.dmg) wins[0]++; else if (A.dmg < P.dmg) wins[1]++;
   else lastResult = 'DRAW';
   setMode('roundEnd');
+}
+
+// ---------- ink blot projectiles ----------
+function fireBlot(f) {
+  shots.push({ x: f.x + f.face * 26, y: f.y + BLOT.y, vx: f.face * BLOT.speed, owner: f, col: f.col, t: 1.5, tr: [] });
+  puff(f.x + f.face * 26, f.y + BLOT.y, f.col, 10);
+  sfx.throwInk();
+  shake = Math.max(shake, 3);
+}
+function updateShots(dt) {
+  for (const s of shots) {
+    s.t -= dt; s.x += s.vx * dt;
+    s.tr.push({ x: s.x, y: s.y }); if (s.tr.length > 7) s.tr.shift();
+    if (Math.random() < dt * 14) parts.push({ x: s.x, y: s.y + 4, vx: -s.vx * 0.05 + rnd(-20, 20), vy: rnd(-20, 30), life: 0.5, max: 0.5, col: s.col, r: rnd(1.5, 3), g: 1, blot: Math.random() < 0.4 });
+    const d = s.owner === P ? A : P;
+    if (s.t <= 0 || d.out) continue;
+    if (Math.abs(s.x - d.x) > 15 + BLOT.r) continue;
+    const top = d.st === 'atk' && d.mv === 'sweep' ? -52 : -86;
+    if (s.y < d.y + top - BLOT.r * 0.6 || s.y > d.y + BLOT.r) continue;
+    const pt = { x: s.x, y: s.y }, dirv = sign(s.vx);
+    const facing = d.face === -dirv;
+    if (d.st === 'block' && facing) {
+      if (clock - d.blockStart <= 0.13) {          // parried: bounce it back
+        s.vx = -s.vx * 1.15; s.owner = d; s.col = d.col; s.t = 1.5;
+        hitstop = 0.08; whiteT = 0.06; shake = Math.max(shake, 6);
+        impacts.push({ x: pt.x, y: pt.y, t: 0.12 });
+        pop(d.x, -110, 'RETURNED!', d.col, 24); sfx.parry();
+        continue;
+      }
+      blocked(d, { face: dirv, vx: 0 }, pt);
+      splat(pt.x, pt.y, s.col, 10, -dirv, 100);
+      s.t = 0; continue;
+    }
+    hitLand(d, { face: dirv, vx: 0, power: s.owner.power, shot: true }, BLOT, pt);
+    addBlot(pt.x + dirv * 30, pt.y, s.col, 16);
+    pop(pt.x, pt.y - 44, 'SPLAT!', s.col, 26);
+    s.t = 0;
+  }
+  // two blots meet: both burst
+  for (let i = 0; i < shots.length; i++) for (let j = i + 1; j < shots.length; j++) {
+    const a = shots[i], b = shots[j];
+    if (a.t > 0 && b.t > 0 && sign(a.vx) !== sign(b.vx) && Math.abs(a.x - b.x) < 2 * BLOT.r && Math.abs(a.y - b.y) < 2 * BLOT.r) {
+      a.t = b.t = 0; splat(a.x, a.y, a.col, 14, 1, 150); splat(b.x, b.y, b.col, 14, -1, 150);
+      shake = Math.max(shake, 5); sfx.hit(6);
+    }
+  }
+  shots = shots.filter(s => s.t > 0 && Math.abs(s.x) < blastX + 40);
 }
 
 // ---------- fx ----------
@@ -574,6 +705,7 @@ function step(dt) {
     aiIntent(dt);
     updateFighter(P, A, dt);
     updateFighter(A, P, dt);
+    updateShots(dt);
     // fighters can't overlap
     if (!P.out && !A.out && Math.abs(P.y - A.y) < 60) {
       const ov = 26 - Math.abs(P.x - A.x);
@@ -602,7 +734,7 @@ function step(dt) {
 }
 function physicsOnly(dt) {
   for (const f of [P, A]) {
-    f.in = { mx: 0, jump: false, atk: null, block: false, dash: false };
+    f.in = { mx: 0, jump: false, atk: null, block: false, dash: false, special: false };
     updateFighter(f, f === P ? A : P, dt);
     f.pose = poseOf(f);
   }
@@ -637,6 +769,10 @@ function poseOf(f) {
     if (f.mt < m.su) return lerpP(P_.idle, P_[m.w], ease(f.mt / m.su));
     if (f.mt < m.su + m.ac) return P_[m.s];
     return lerpP(P_[m.s], P_.idle, Math.min(1, (f.mt - m.su - m.ac) / m.re));
+  }
+  if (f.st === 'throw') {
+    if (f.mt < BLOT.su) return lerpP(P_.idle, P_.heavyW, ease(f.mt / BLOT.su));
+    return lerpP(P_.jab, P_.idle, Math.min(1, (f.mt - BLOT.su) / BLOT.re));
   }
   if (f.st === 'block' || f.st === 'blockstun') return P_.block;
   if (f.st === 'dizzy') { const p = Object.assign({}, P_.dizzy); p.lean += Math.sin(clock * 12) * 8; return p; }
@@ -781,6 +917,20 @@ function render() {
       ctx.fillStyle = 'rgba(60,40,20,.2)'; ctx.beginPath(); ctx.ellipse(sx(f.x), sy(0) + 1, 18 * K * sc, 4 * K * sc, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
+  // a fighter with a full ink meter drips ink
+  if (mode === 'fight') for (const f of [P, A]) if (f && !f.out && f.ink >= INK_FULL) {
+    ctx.strokeStyle = f.col; ctx.globalAlpha = 0.25 + 0.15 * Math.sin(clock * 10); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(sx(f.x), sy(f.y - 45), 28 * K, 52 * K, 0, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+    if (Math.random() < 0.25) parts.push({ x: f.x + rnd(-14, 14), y: f.y - rnd(20, 70), vx: 0, vy: 20, life: 0.4, max: 0.4, col: f.col, r: 2, g: 0.6 });
+  }
+  for (const s of shots) {
+    s.tr.forEach((q, i) => { ctx.globalAlpha = (i + 1) / s.tr.length * 0.35; ctx.fillStyle = s.col; ctx.beginPath(); ctx.arc(sx(q.x), sy(q.y), BLOT.r * K * (0.4 + i / s.tr.length * 0.5), 0, Math.PI * 2); ctx.fill(); });
+    ctx.globalAlpha = 1; ctx.fillStyle = s.col; ctx.beginPath();
+    const wob = clock * 30;
+    for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2, rr = BLOT.r * K * (1 + 0.18 * Math.sin(wob + i * 2.3)); i ? ctx.lineTo(sx(s.x) + Math.cos(a) * rr, sy(s.y) + Math.sin(a) * rr) : ctx.moveTo(sx(s.x) + Math.cos(a) * rr, sy(s.y) + Math.sin(a) * rr); }
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.beginPath(); ctx.arc(sx(s.x) - 3 * K, sy(s.y) - 3 * K, 2.5 * K, 0, Math.PI * 2); ctx.fill();
+  }
   // attacker drawn on top
   const order = fighters.slice().sort((a, b) => (a.st === 'atk') - (b.st === 'atk'));
   for (const f of order) if (f) drawFighter(f);
@@ -835,7 +985,7 @@ function drawHUD() {
     text('Tap to fight', CX, H * 0.82, 22, INK, 'center', '900');
     ctx.globalAlpha = 1;
     text('Rival ' + (save.rival + 1) + ' of 8: ' + r.name + ' · ' + r.trait, CX, H * 0.82 + 30, 14, r.col, 'center', '800');
-    text('Left thumb: drag to move, flick up to jump · Right thumb: tap jab, swipe ↑ ↓ → , hold to block', CX, H - 22, Math.min(11, W * 0.027), '#7a7264', 'center', '600');
+    text('Left: drag to move, flick ↑ jump · Right: tap jab, swipe ↑ ↓ →, hold block · INK when full', CX, H - 22, Math.min(11, W * 0.027), '#7a7264', 'center', '600');
     return;
   }
   if (mode === 'champ') {
@@ -853,6 +1003,9 @@ function drawHUD() {
   text(R.name.toUpperCase(), W - 18, top + 4, 13, R.col, 'right', '900');
   text(Math.round(A.dmg) + '%', W - 18, top + 30, 32, dmgCol(A.dmg, R.col), 'right', '900', 4);
   pips(W - 18, top + 56, wins[1], R.col, 'right');
+  inkBar(62, top + 56, P.ink, INK, 'left');
+  inkBar(W - 62, top + 56, A.ink, R.col, 'right');
+  if (mode === 'fight' || mode === 'ready') drawInkBtn();
   // timer
   ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(CX, top + 22, 20, 0, Math.PI * 2); ctx.stroke();
   text(String(Math.max(0, Math.ceil(timer))), CX, top + 23, 18, INK, 'center', '900');
@@ -876,6 +1029,7 @@ function drawHUD() {
     text('drag ◀ ▶', W * 0.21, H * 0.82, 13, '#5a5348', 'center', '800');
     text('flick ↑ to jump', W * 0.21, H * 0.82 + 20, 12, '#5a5348', 'center', '700');
     text('tap: jab · hold: block', W * 0.71, H * 0.82, 13, '#5a5348', 'center', '800');
+    const ib = inkBtn(); text('land hits to fill INK ↑', ib.x - 40, ib.y + ib.r + 22, 11, '#5a5348', 'center', '800');
     text('swipe ↑ upper · ↓ sweep · → kick', W * 0.71, H * 0.82 + 20, 12, '#5a5348', 'center', '700');
     ctx.globalAlpha = 1;
   }
@@ -920,6 +1074,24 @@ function drawHUD() {
     if (modeT > 0.9) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 4); text(matchWon ? 'Tap for the next rival' : 'Tap to rematch', CX, H * 0.72, 20, INK, 'center', '900'); ctx.globalAlpha = 1; }
   }
 }
+function inkBar(x, y, v, col, align) {
+  const w = 56, x0 = align === 'left' ? x : x - w, f = v / INK_FULL;
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.strokeRect(x0, y - 3, w, 6);
+  ctx.fillStyle = col; ctx.globalAlpha = f >= 1 ? 0.7 + 0.3 * Math.sin(clock * 10) : 0.8;
+  ctx.fillRect(align === 'left' ? x0 : x0 + w * (1 - f), y - 3, w * f, 6); ctx.globalAlpha = 1;
+}
+function inkBtn() { return { x: W - 52, y: H - Math.max(150, H * 0.3), r: 30 }; }
+function drawInkBtn() {
+  const b = inkBtn(), f = P.ink / INK_FULL, full = f >= 1;
+  ctx.globalAlpha = full ? 1 : 0.45;
+  ctx.fillStyle = full ? INK : 'rgba(244,236,216,.8)'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = '#d8262c'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 5, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke();
+  const sc = full ? 1 + 0.08 * Math.sin(clock * 8) : 1;
+  text('INK', b.x, b.y - 2, 14 * sc, full ? PAPER : INK, 'center', '900');
+  if (!isTouch) text('U', b.x, b.y + 13, 9, full ? PAPER : '#5a5348', 'center', '800');
+  ctx.globalAlpha = 1;
+}
 function veil(a) { ctx.fillStyle = 'rgba(244,236,216,' + a + ')'; ctx.fillRect(0, 0, W, H); }
 function dmgCol(d, base) { return d > 120 ? '#d8262c' : d > 70 ? '#c45a00' : base; }
 function pips(x, y, n, col, align) {
@@ -939,6 +1111,7 @@ function frame(now) {
   if (slowT > 0) { slowT -= dt; ts = 0.3; } else ts = 1;
   if (running) { acc += dt * ts; while (acc >= DT) { step(DT); acc -= DT; } }
   render();
+  if (running) musicTick();
   requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => { running = !document.hidden; last = 0; acc = 0; tL = tR = null; });
@@ -954,5 +1127,5 @@ requestAnimationFrame(frame);
 
 // hook for the headless test sim
 window.__ink = { get mode() { return mode; }, get wins() { return wins; }, get rival() { return rivalIdx; },
-  get P() { return P; }, get A() { return A; }, get know() { return know(); }, menuTap, queueAtk, keys, buf };
+  get P() { return P; }, get A() { return A; }, get know() { return know(); }, menuTap, queueAtk, keys, buf, get shots() { return shots; } };
 })();
