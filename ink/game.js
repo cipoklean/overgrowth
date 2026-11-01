@@ -26,9 +26,43 @@ const ease = t => 1 - (1 - t) * (1 - t);
 let W = 0, H = 0, DPR = 1, K = 1, CX = 0, GY = 0, blastX = 400, blastY = 300;
 
 // ---------- save ----------
-let save = { rival: 0, cleared: false, muted: false, tut: false };
+let save = { rival: 0, cleared: false, muted: false, tut: false, name: '', xp: 0 };
 let paused = false;
 try { Object.assign(save, JSON.parse(localStorage.getItem(SKEY) || '{}')); } catch (e) {}
+// ---------- player name + rank ----------
+const RANKS = [
+  [0, 'Doodler'], [150, 'Scribbler'], [400, 'Sketcher'], [800, 'Inker'],
+  [1400, 'Penman'], [2200, 'Illustrator'], [3300, 'Master Inker'], [5000, 'Legend of the Page']
+];
+function rankIdx(xp) { let i = 0; while (i < RANKS.length - 1 && xp >= RANKS[i + 1][0]) i++; return i; }
+function rankName(xp) { return RANKS[rankIdx(xp == null ? save.xp : xp)][1]; }
+function rankProg() {
+  const i = rankIdx(save.xp);
+  if (i >= RANKS.length - 1) return { f: 1, cur: save.xp, need: 0 };
+  const a = RANKS[i][0], b = RANKS[i + 1][0];
+  return { f: (save.xp - a) / (b - a), cur: save.xp - a, need: b - a };
+}
+function pname() { return (save.name || 'YOU').toUpperCase(); }
+let nameCard = null;
+let matchXp = 0, rankAtStart = 0, nameOpen = false, nameThenFight = false;
+function addXp(n) { n = Math.round(n); if (n <= 0) return; save.xp = (save.xp || 0) + n; matchXp += n; }
+function openName(thenFight) {
+  const box = document.getElementById('namebox'), inp = document.getElementById('nm');
+  if (!box || !inp) { if (!save.name) save.name = 'PLAYER'; if (thenFight) startMatch(save.rival); return; }
+  nameOpen = true; nameThenFight = !!thenFight;
+  inp.value = save.name || ''; box.style.display = 'flex';
+  setTimeout(() => { try { inp.focus(); } catch (e) {} }, 50);
+}
+function closeName() {
+  const box = document.getElementById('namebox'), inp = document.getElementById('nm');
+  let v = (inp.value || '').replace(/[^\p{L}\p{N} _.\-]/gu, '').trim().slice(0, 12);
+  if (!v) v = save.name || 'PLAYER';
+  save.name = v; persist();
+  try { inp.blur(); } catch (e) {}
+  box.style.display = 'none'; nameOpen = false;
+  tL = tR = null;
+  if (nameThenFight) { nameThenFight = false; startMatch(save.rival); }
+}
 function persist() { try { localStorage.setItem(SKEY, JSON.stringify(save)); } catch (e) {} }
 
 // ---------- rivals ----------
@@ -251,6 +285,7 @@ function startMatch(idx) {
   blots = [];
   makeStage();
   resetRound();
+  matchXp = 0; rankAtStart = rankIdx(save.xp || 0);
   setMode('vs');
   if (!save.tut) { save.tut = true; persist(); setPaused(true); }
 }
@@ -276,7 +311,8 @@ let tL = null, tR = null;
 function queueAtk(m) { buf.atk = m; buf.atkT = 0.16; }
 function menuTap() {
   audioInit();
-  if (mode === 'title') { startMatch(save.cleared ? save.rival : save.rival); return; }
+  if (nameOpen) return;
+  if (mode === 'title') { if (!save.name) openName(true); else startMatch(save.rival); return; }
   if (mode === 'matchEnd' && modeT > 0.9) {
     if (matchWon) {
       if (rivalIdx >= RIVALS.length - 1) { setMode('champ'); return; }
@@ -287,6 +323,7 @@ function menuTap() {
   if (mode === 'champ' && modeT > 1.2) { setMode('title'); }
 }
 window.addEventListener('keydown', e => {
+  if (nameOpen || (e.target && e.target.tagName === 'INPUT')) { if (e.key === 'Enter') closeName(); return; }
   const k = e.key.toLowerCase();
   if (keys[k]) return;
   keys[k] = true;
@@ -309,6 +346,7 @@ cv.addEventListener('pointerdown', e => {
   if (e.pointerType === 'touch') isTouch = true;
   audioInit();
   if (paused) { setPaused(false); return; }
+  if (mode === 'title' && nameCard && e.clientY > nameCard.y0 && e.clientY < nameCard.y1 && Math.abs(e.clientX - CX) < nameCard.w) { openName(false); return; }
   if (mode !== 'fight' && mode !== 'ready') { menuTap(); return; }
   const x = e.clientX, y = e.clientY;
   const ib = inkBtn();
@@ -564,6 +602,7 @@ function hitLand(d, a, m, pt) {
   const dmg = Math.round(m.dmg * a.power);
   d.dmg += dmg;
   if (!a.shot) a.ink = Math.min(INK_FULL, a.ink + dmg * 4);
+  if (a.isP && mode === 'fight') addXp(dmg);
   d.ink = Math.min(INK_FULL, d.ink + dmg * 1.5);
   const kb = (m.base + m.grow * d.dmg) / d.weight;
   const ang = m.ang * D2R;
@@ -614,6 +653,7 @@ function ringOut(f, o) {
   const ex = clamp(f.x, -W / 2 / K + 20, W / 2 / K - 20), ey = Math.min(f.y, blastY - 90);
   splat(ex, ey, f.col, 40, sign(f.x), 600);
   wins[f.isP ? 1 : 0]++;
+  if (!f.isP) addXp(40);
   lastResult = 'RING OUT!';
   setMode('roundEnd');
 }
@@ -738,12 +778,15 @@ function step(dt) {
     if (modeT > 2.0) {
       if (wins[0] >= 2 || wins[1] >= 2) {
         matchWon = wins[0] >= 2;
+        addXp(wins[0] * 30 + (matchWon ? 100 + 25 * rivalIdx : 20));
+        persist();
         if (matchWon) {
           sfx.win();
           if (rivalIdx >= RIVALS.length - 1) save.cleared = true;
           save.rival = Math.min(RIVALS.length - 1, Math.max(save.rival, rivalIdx + 1));
           persist();
         } else sfx.lose();
+        if (rankIdx(save.xp) > rankAtStart) setTimeout(() => { sfx.win(); }, 500);
         setMode('matchEnd');
       } else {
         if (lastResult !== 'DRAW') roundNo++;
@@ -954,6 +997,11 @@ function render() {
   // attacker drawn on top
   const order = fighters.slice().sort((a, b) => (a.st === 'atk') - (b.st === 'atk'));
   for (const f of order) if (f) drawFighter(f);
+  if (P && !P.out && (mode === 'fight' || mode === 'ready' || mode === 'roundEnd')) {
+    ctx.globalAlpha = 0.75;
+    text(pname(), sx(P.x), sy(P.y - 112), Math.max(10, 12 * K), INK, 'center', '900', 3);
+    ctx.globalAlpha = 1;
+  }
 
   for (const p of parts) {
     ctx.globalAlpha = Math.min(1, p.life / p.max * 2); ctx.fillStyle = p.col;
@@ -1001,6 +1049,19 @@ function drawHUD() {
     text('INK BRAWL', 0, 0, t, INK, 'center', '900', 6);
     ctx.restore();
     text('Stick-figure duels. Your rival learns how you fight.', CX, H * 0.16 + t * 0.85, Math.min(15, W * 0.038), '#5a5348', 'center', '600');
+    // fighter card: name, rank, progress. Tap it to rename.
+    const cy = H * 0.16 + t * 0.85 + 36;
+    if (save.name) {
+      text('✎ ' + pname(), CX, cy, 20, INK, 'center', '900', 4);
+      const rp = rankProg(), bw = 150;
+      text('Rank: ' + rankName() + (rp.need ? ' · ' + rp.cur + '/' + rp.need + ' XP' : ' · MAX'), CX, cy + 22, 12, '#5a5348', 'center', '800');
+      ctx.fillStyle = 'rgba(0,0,0,.1)'; ctx.fillRect(CX - bw / 2, cy + 32, bw, 5);
+      ctx.fillStyle = '#d8262c'; ctx.fillRect(CX - bw / 2, cy + 32, bw * rp.f, 5);
+      nameCard = { y0: cy - 22, y1: cy + 44, w: 110 };
+    } else {
+      text('✎ Tap here to name your fighter', CX, cy, 15, '#d8262c', 'center', '900');
+      nameCard = { y0: cy - 20, y1: cy + 16, w: 150 };
+    }
     const r = RIVALS[Math.min(save.rival, RIVALS.length - 1)];
     ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 4);
     text('Tap to fight', CX, H * 0.82, 22, INK, 'center', '900');
@@ -1017,7 +1078,7 @@ function drawHUD() {
   }
   const top = 18;
   // player
-  text('YOU', 18, top + 4, 13, INK, 'left', '900');
+  text(pname() + ' · ' + rankName().toUpperCase(), 18, top + 4, 11, INK, 'left', '900');
   text(Math.round(P.dmg) + '%', 18, top + 30, 32, dmgCol(P.dmg, INK), 'left', '900', 4);
   pips(18, top + 56, wins[0], INK, 'left');
   // rival
@@ -1059,7 +1120,8 @@ function drawHUD() {
     veil(0.55);
     const a = Math.min(1, modeT * 3);
     ctx.globalAlpha = a;
-    text('YOU', CX, H * 0.3, 34, INK, 'center', '900', 5);
+    text(pname(), CX, H * 0.3, 34, INK, 'center', '900', 5);
+    text(rankName(), CX, H * 0.3 - 30, 13, '#5a5348', 'center', '800');
     text('vs', CX, H * 0.3 + 40, 20, '#5a5348', 'center', '800');
     text(R.name.toUpperCase(), CX, H * 0.3 + 82, 38, R.col, 'center', '900', 5);
     text('Rival ' + (rivalIdx + 1) + ' of 8 · ' + R.trait, CX, H * 0.3 + 118, 14, '#5a5348', 'center', '700');
@@ -1075,7 +1137,7 @@ function drawHUD() {
     const sc = 1 + Math.max(0, 0.25 - modeT) * 2;
     text(lastResult, CX, H * 0.34, 50 * sc, '#d8262c', 'center', '900', 6);
     if (modeT > 0.7) {
-      const who = lastResult === 'DRAW' ? 'No point. Go again.' : (wins[0] + wins[1] > 0 ? 'YOU ' + wins[0] + ' — ' + wins[1] + ' ' + R.name.toUpperCase() : '');
+      const who = lastResult === 'DRAW' ? 'No point. Go again.' : (wins[0] + wins[1] > 0 ? pname() + ' ' + wins[0] + ' — ' + wins[1] + ' ' + R.name.toUpperCase() : '');
       text(who, CX, H * 0.34 + 44, 18, INK, 'center', '900', 4);
     }
   }
@@ -1092,7 +1154,21 @@ function drawHUD() {
       const h = topHabit();
       text('It learned your ' + HABIT_LABEL[h] + ' (' + Math.round(share(h) * 100) + '% of what you did). Mix it up.', CX, H * 0.32 + 40, 14, '#5a5348', 'center', '700');
     }
-    if (modeT > 0.9) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 4); text(matchWon ? 'Tap for the next rival' : 'Tap to rematch', CX, H * 0.72, 20, INK, 'center', '900'); ctx.globalAlpha = 1; }
+    // xp + rank
+    {
+      const y = H * 0.32 + 76, rp = rankProg(), bw = 180;
+      text('+' + matchXp + ' XP · ' + rankName() + (rp.need ? ' (' + rp.cur + '/' + rp.need + ')' : ''), CX, y, 15, INK, 'center', '900');
+      const f = Math.min(1, modeT / 0.8) * rp.f;
+      ctx.fillStyle = 'rgba(0,0,0,.1)'; ctx.fillRect(CX - bw / 2, y + 12, bw, 6);
+      ctx.fillStyle = '#d8262c'; ctx.fillRect(CX - bw / 2, y + 12, bw * f, 6);
+      if (rankIdx(save.xp) > rankAtStart) {
+        const sc = 1 + Math.max(0, 0.6 - modeT) * 0.8;
+        ctx.save(); ctx.translate(CX, y + 52); ctx.rotate(-0.04);
+        text('RANK UP! ' + rankName().toUpperCase(), 0, 0, 26 * sc * Math.min(1, W / 380), '#d8262c', 'center', '900', 5);
+        ctx.restore();
+      }
+    }
+    if (modeT > 0.9) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 4); text(matchWon ? 'Tap for the next rival' : 'Tap to rematch', CX, H * 0.32 + 170 > H * 0.78 ? H * 0.32 + 170 : H * 0.78, 20, INK, 'center', '900'); ctx.globalAlpha = 1; }
   }
 }
 function inkBar(x, y, v, col, align) {
@@ -1178,7 +1254,7 @@ window.addEventListener('resize', resize);
 const noZoom = e => { if (e.touches && e.touches.length > 1 || e.type === 'gesturestart' || e.type === 'dblclick') e.preventDefault(); };
 ['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'dblclick'].forEach(t => document.addEventListener(t, noZoom, { passive: false }));
 let lastTouchEnd = 0;
-document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastTouchEnd < 350) e.preventDefault(); lastTouchEnd = n; }, { passive: false });
+document.addEventListener('touchend', e => { if (e.target && (e.target.tagName === 'INPUT' || e.target.id === 'nmok')) return; const n = Date.now(); if (n - lastTouchEnd < 350) e.preventDefault(); lastTouchEnd = n; }, { passive: false });
 function unzoom() {
   const vv = window.visualViewport;
   if (!vv || vv.scale <= 1.01) return;
@@ -1188,6 +1264,8 @@ function unzoom() {
 }
 if (window.visualViewport) window.visualViewport.addEventListener('resize', unzoom);
 setInterval(unzoom, 1000);
+const nmOk = document.getElementById('nmok');
+if (nmOk) nmOk.addEventListener('click', e => { e.stopPropagation && e.stopPropagation(); closeName(); });
 const pauseBtn = document.getElementById('pause');
 if (pauseBtn) pauseBtn.addEventListener('click', e => { e.stopPropagation && e.stopPropagation(); audioInit(); setPaused(!paused); });
 const muteBtn = document.getElementById('mute');
@@ -1200,6 +1278,6 @@ resize();
 requestAnimationFrame(frame);
 
 // hook for the headless test sim
-window.__ink = { get mode() { return mode; }, get wins() { return wins; }, get rival() { return rivalIdx; },
+window.__ink = { get mode() { return mode; }, get save() { return save; }, get wins() { return wins; }, get rival() { return rivalIdx; },
   get P() { return P; }, get A() { return A; }, get know() { return know(); }, menuTap, queueAtk, keys, buf, get shots() { return shots; } };
 })();
